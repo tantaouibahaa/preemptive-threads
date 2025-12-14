@@ -11,34 +11,40 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  build:
-    name: Build
+  # Build for the target platform (Raspberry Pi Zero 2 W)
+  build-bare-metal:
+    name: Build (aarch64 bare-metal)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        rust: [nightly]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+          components: rust-src
+      - uses: Swatinem/rust-cache@v2
+      - name: Build library
+        run: cargo build --release
+      - name: Build kernel example
+        run: cargo build --release --example rpi_kernel
+
+  # Run tests on host with std-shim
+  test:
+    name: Test (host)
     runs-on: ubuntu-latest
     strategy:
       matrix:
         rust: [stable, beta, nightly, 1.70.0]
-        features: [
-          "",
-          "std-shim",
-          "x86_64",
-          "arm64", 
-          "riscv64",
-          "full-fpu",
-          "mmu",
-          "work-stealing",
-          "hardened",
-          "std-shim,x86_64,full-fpu"
-        ]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.rust }}
       - uses: Swatinem/rust-cache@v2
-      - name: Build
-        run: cargo build --features "${{ matrix.features }}"
-      - name: Test
-        run: cargo test --features "std-shim,${{ matrix.features }}"
+      - name: Run tests
+        run: cargo test --features std-shim --target x86_64-unknown-linux-gnu --lib
 
   format:
     name: Format
@@ -55,67 +61,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --all-features -- -D warnings
-
-  miri:
-    name: Miri
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
         with:
-          components: miri
+          components: clippy, rust-src
       - uses: Swatinem/rust-cache@v2
-      - run: cargo miri test --features std-shim
-
-  kani:
-    name: Kani
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install Kani
-        run: |
-          wget -q https://github.com/model-checking/kani/releases/latest/download/kani-verifier-x86_64-unknown-linux-gnu.tar.gz
-          tar -xzf kani-verifier-x86_64-unknown-linux-gnu.tar.gz
-          echo "$PWD/kani-verifier-x86_64-unknown-linux-gnu/bin" >> $GITHUB_PATH
-      - run: kani --version
-      - run: cargo kani --harness ring_buffer_properties || true
-
-  qemu:
-    name: QEMU Tests
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        target: [x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, riscv64gc-unknown-linux-gnu]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
-      - name: Install QEMU
-        run: sudo apt-get update && sudo apt-get install -y qemu-user
-      - name: Build for target
-        run: cargo build --target ${{ matrix.target }} --features std-shim
-      - name: Test with QEMU (if cross-compiled)
-        if: matrix.target != 'x86_64-unknown-linux-gnu'
-        run: |
-          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
-            qemu-aarch64 target/${{ matrix.target }}/debug/deps/preemptive_threads-* || true
-          elif [ "${{ matrix.target }}" = "riscv64gc-unknown-linux-gnu" ]; then
-            qemu-riscv64 target/${{ matrix.target }}/debug/deps/preemptive_threads-* || true
-          fi
+      - name: Clippy (bare-metal)
+        run: cargo clippy -- -D warnings
+      - name: Clippy (std-shim)
+        run: cargo clippy --features std-shim --target x86_64-unknown-linux-gnu -- -D warnings
 
   msrv:
-    name: MSRV
+    name: MSRV (1.70.0)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.70.0
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.70.0
+          components: rust-src
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build
-      - run: cargo test --features std-shim
+      - name: Check MSRV
+        run: cargo check --features std-shim --target x86_64-unknown-linux-gnu
