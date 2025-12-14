@@ -1,11 +1,12 @@
 //! Minimal bare-metal kernel example for Raspberry Pi Zero 2 W.
 //!
-//! This example demonstrates basic preemptive multithreading on bare metal.
+//! This example demonstrates basic preemptive multithreading on bare metal
+//! with UART output so you can see what's happening!
 //!
 //! # Building
 //!
 //! ```bash
-//! cargo build --release --example rpi_kernel
+//! cargo build --release --example rpi_kernel --target aarch64-unknown-none
 //! ```
 //!
 //! # Deploying
@@ -23,7 +24,18 @@
 //!    kernel=kernel8.img
 //!    ```
 //!
-//! 4. Boot the Raspberry Pi
+//! 4. Connect USB-to-serial adapter:
+//!    - GPIO 14 (pin 8) = TX -> connect to adapter RX
+//!    - GPIO 15 (pin 10) = RX -> connect to adapter TX
+//!    - GND (pin 6) -> connect to adapter GND
+//!
+//! 5. On your computer, open serial terminal:
+//!    ```bash
+//!    screen /dev/tty.usbserial* 115200   # macOS
+//!    screen /dev/ttyUSB0 115200          # Linux
+//!    ```
+//!
+//! 6. Boot the Raspberry Pi and watch the output!
 
 #![no_std]
 #![no_main]
@@ -33,13 +45,12 @@ extern crate alloc;
 use preemptive_threads::{
     arch::{Arch, DefaultArch},
     sched::RoundRobinScheduler,
+    uart_println,
     Kernel,
 };
 use spin::Lazy;
 
 /// Simple bump allocator for the heap.
-///
-/// In a real kernel, you'd want a more sophisticated allocator.
 mod allocator {
     use core::alloc::{GlobalAlloc, Layout};
     use core::cell::UnsafeCell;
@@ -74,7 +85,7 @@ mod allocator {
                 let new_next = aligned + size;
 
                 if new_next > HEAP_SIZE {
-                    return null_mut(); // Out of memory
+                    return null_mut();
                 }
 
                 if HEAP
@@ -82,8 +93,8 @@ mod allocator {
                     .compare_exchange(current, new_next, Ordering::Relaxed, Ordering::Relaxed)
                     .is_ok()
                 {
-                    let heap_start = unsafe { HEAP.data.get() as *mut u8 };
-                    return unsafe { heap_start.add(aligned) };
+                    let heap_start = HEAP.data.get() as *mut u8;
+                    return heap_start.add(aligned);
                 }
             }
         }
@@ -97,41 +108,81 @@ mod allocator {
     static ALLOCATOR: BumpAllocator = BumpAllocator;
 }
 
-/// The kernel instance (static for interrupt handler access).
-/// Using single CPU (Pi Zero 2 W has 4 cores but we only use 1 for now).
+/// The kernel instance.
 static KERNEL: Lazy<Kernel<DefaultArch, RoundRobinScheduler>> =
     Lazy::new(|| Kernel::new(RoundRobinScheduler::new(1)));
 
 /// Kernel entry point - called from boot code after hardware init.
 #[no_mangle]
 pub fn kernel_main() -> ! {
+    // Initialize UART first so we can see output
+    unsafe {
+        preemptive_threads::arch::uart::init();
+    }
+
+    uart_println!("");
+    uart_println!("========================================");
+    uart_println!("  Preemptive Threads Kernel v0.6.0");
+    uart_println!("  Raspberry Pi Zero 2 W");
+    uart_println!("========================================");
+    uart_println!("");
+
     // Initialize the kernel
+    uart_println!("[BOOT] Initializing kernel...");
     KERNEL.init().expect("Failed to initialize kernel");
+    uart_println!("[BOOT] Kernel initialized!");
 
     // Register kernel globally for interrupt handlers
     unsafe {
         KERNEL.register_global();
     }
+    uart_println!("[BOOT] Kernel registered globally");
 
-    // Spawn some test threads
+    // Spawn Thread 1
+    uart_println!("[BOOT] Spawning Thread 1...");
     KERNEL
         .spawn(
             || {
                 let mut counter = 0u64;
                 loop {
                     counter = counter.wrapping_add(1);
-                    if counter % 1_000_000 == 0 {
-                        // In a real kernel, we'd output to UART here
-                        // println!("Thread 1: {}", counter);
+                    if counter % 500_000 == 0 {
+                        uart_println!("[Thread 1] counter = {}", counter);
                     }
-                    // Cooperative yield (preemption will also happen via timer)
-                    preemptive_threads::yield_now();
+                    // Small busy loop to simulate work
+                    for _ in 0..1000 {
+                        core::hint::spin_loop();
+                    }
                 }
             },
-            128,
+            128, // Normal priority
         )
         .expect("Failed to spawn thread 1");
+    uart_println!("[BOOT] Thread 1 spawned!");
 
+    // Spawn Thread 2
+    uart_println!("[BOOT] Spawning Thread 2...");
+    KERNEL
+        .spawn(
+            || {
+                let mut counter = 0u64;
+                loop {
+                    counter = counter.wrapping_add(1);
+                    if counter % 500_000 == 0 {
+                        uart_println!("[Thread 2] counter = {}", counter);
+                    }
+                    for _ in 0..1000 {
+                        core::hint::spin_loop();
+                    }
+                }
+            },
+            128, // Normal priority
+        )
+        .expect("Failed to spawn thread 2");
+    uart_println!("[BOOT] Thread 2 spawned!");
+
+    // Spawn Thread 3 (lower priority)
+    uart_println!("[BOOT] Spawning Thread 3 (low priority)...");
     KERNEL
         .spawn(
             || {
@@ -139,34 +190,44 @@ pub fn kernel_main() -> ! {
                 loop {
                     counter = counter.wrapping_add(1);
                     if counter % 1_000_000 == 0 {
-                        // println!("Thread 2: {}", counter);
+                        uart_println!("[Thread 3] low-priority counter = {}", counter);
                     }
-                    preemptive_threads::yield_now();
+                    for _ in 0..1000 {
+                        core::hint::spin_loop();
+                    }
                 }
             },
-            128,
+            32, // Low priority
         )
-        .expect("Failed to spawn thread 2");
+        .expect("Failed to spawn thread 3");
+    uart_println!("[BOOT] Thread 3 spawned!");
 
     // Set up the preemption timer (1ms time slices)
+    uart_println!("[BOOT] Setting up preemption timer (1ms)...");
     unsafe {
         preemptive_threads::arch::aarch64::setup_preemption_timer(1000)
             .expect("Failed to setup timer");
     }
+    uart_println!("[BOOT] Timer configured!");
 
-    // Enable interrupts to start preemption
+    // Enable interrupts
+    uart_println!("[BOOT] Enabling interrupts...");
     DefaultArch::enable_interrupts();
+    uart_println!("[BOOT] Interrupts enabled!");
 
-    // Start running the first thread
-    // This never returns - we're now running threads
+    uart_println!("");
+    uart_println!("[BOOT] Starting scheduler - threads will now run!");
+    uart_println!("========================================");
+    uart_println!("");
+
+    // Start running the first thread - this never returns
     KERNEL.start_first_thread();
 
-    // If we somehow get here, just halt
+    // If we somehow get here, halt
+    uart_println!("[ERROR] Scheduler returned unexpectedly!");
     loop {
         unsafe {
             core::arch::asm!("wfe");
         }
     }
 }
-
-// Panic handler is provided by the library

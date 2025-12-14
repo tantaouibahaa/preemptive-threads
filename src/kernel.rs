@@ -5,7 +5,7 @@
 
 use crate::arch::Arch;
 use crate::sched::Scheduler;
-use crate::thread_new::{ThreadId, Thread, JoinHandle, ReadyRef, RunningRef, ThreadState};
+use crate::thread_new::{JoinHandle, ReadyRef, RunningRef, Thread, ThreadId};
 use crate::mem::{StackPool, StackSizeClass};
 use core::marker::PhantomData;
 use portable_atomic::{AtomicBool, AtomicUsize, AtomicPtr, Ordering};

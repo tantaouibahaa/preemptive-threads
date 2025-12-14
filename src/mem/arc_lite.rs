@@ -3,12 +3,10 @@
 //! This provides an Arc-like abstraction using portable atomics that works
 //! in no_std environments and supports manual reference count management.
 
-use portable_atomic::{AtomicUsize, Ordering};
 use core::alloc::Layout;
-use core::ptr::{self, NonNull};
 use core::ops::Deref;
-// mem and MaybeUninit imports not needed yet
-// use core::mem::{self, MaybeUninit};
+use core::ptr::NonNull;
+use portable_atomic::{AtomicUsize, Ordering};
 
 /// A lightweight atomic reference counter similar to Arc but with manual control.
 ///
@@ -34,6 +32,7 @@ impl<T> ArcLite<T> {
     /// # Returns
     ///
     /// A new ArcLite instance with reference count of 1.
+    #[allow(unused_variables)]
     pub fn new(data: T) -> Self {
         // For now, we'll use a simple Box-like allocation approach
         // In a real implementation, we'd need a proper allocator
@@ -46,20 +45,20 @@ impl<T> ArcLite<T> {
             extern crate std;
             use core::alloc::GlobalAlloc;
             use std::alloc::System;
-            let ptr = unsafe { GlobalAlloc::alloc(&System, layout) as *mut ArcLiteInner<T> };
-            if ptr.is_null() {
+            let alloc_ptr = unsafe { GlobalAlloc::alloc(&System, layout) as *mut ArcLiteInner<T> };
+            if alloc_ptr.is_null() {
                 panic!("Failed to allocate memory for ArcLite");
             }
 
             unsafe {
-                ptr::write(ptr, ArcLiteInner {
+                core::ptr::write(alloc_ptr, ArcLiteInner {
                     count: AtomicUsize::new(1),
                     data,
                 });
             }
 
             Self {
-                ptr: unsafe { NonNull::new_unchecked(ptr) },
+                ptr: unsafe { NonNull::new_unchecked(alloc_ptr) },
             }
         }
         
@@ -144,7 +143,7 @@ impl<T> ArcLite<T> {
 
             // Drop the data
             unsafe {
-                ptr::drop_in_place(&mut self.ptr.as_ptr().as_mut().unwrap().data);
+                core::ptr::drop_in_place(&mut self.ptr.as_ptr().as_mut().unwrap().data);
 
                 // Deallocate the memory
                 GlobalAlloc::dealloc(&System, self.ptr.as_ptr() as *mut u8, layout);

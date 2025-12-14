@@ -1,22 +1,12 @@
-//! New scheduler implementations with lock-free data structures.
+//! Thread scheduler implementations.
 //!
-//! This module provides high-performance schedulers that use lock-free
-//! algorithms to minimize contention and improve scalability.
+//! Provides the round-robin scheduler for managing thread execution.
 
-pub mod trait_def;
 pub mod rr;
-#[cfg(feature = "work-stealing")]
-pub mod worksteal;
+pub mod trait_def;
 
-pub use trait_def::{Scheduler, CpuId, priority};
 pub use rr::RoundRobinScheduler;
+pub use trait_def::{priority, CpuId, Scheduler};
 
-#[cfg(feature = "work-stealing")]
-pub use worksteal::WorkStealingScheduler;
-
-/// Default scheduler selection based on available features.
-#[cfg(feature = "work-stealing")]
-pub type DefaultScheduler = WorkStealingScheduler;
-
-#[cfg(not(feature = "work-stealing"))]
+/// Default scheduler type.
 pub type DefaultScheduler = RoundRobinScheduler;

@@ -277,6 +277,7 @@ impl Thread {
     /// * `entry_point` - Address of the function to start executing
     /// * `stack_top` - Top of the stack (initial SP value)
     /// * `arg` - Argument to pass to the entry point (in x0 on ARM64)
+    #[allow(unused_variables, unused_mut)]
     pub fn setup_initial_context(&self, entry_point: usize, stack_top: usize, arg: usize) {
         let mut ctx_guard = self.inner.context.lock();
 

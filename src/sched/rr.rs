@@ -32,8 +32,6 @@ struct CpuRunQueue {
     low_priority: LockFreeQueue,
     /// Idle priority queue (0)
     idle_priority: LockFreeQueue,
-    /// Current queue position for round-robin within priority level
-    current_pos: AtomicUsize,
     /// Thread count for load balancing
     thread_count: AtomicUsize,
 }
@@ -202,19 +200,21 @@ impl Scheduler for RoundRobinScheduler {
                 match Self::priority_level(current_priority) {
                     PriorityLevel::Idle => {
                         // Idle can be preempted by anything
-                        if let Some(next) = queue.low_priority.peek()
-                            .or_else(|| queue.normal_priority.peek())
-                            .or_else(|| queue.high_priority.peek()) {
+                        if queue.low_priority.peek().is_some()
+                            || queue.normal_priority.peek().is_some()
+                            || queue.high_priority.peek().is_some()
+                        {
                             return Some(ready);
                         }
-                    },
+                    }
                     PriorityLevel::Low => {
                         // Low can be preempted by normal/high
-                        if let Some(next) = queue.normal_priority.peek()
-                            .or_else(|| queue.high_priority.peek()) {
+                        if queue.normal_priority.peek().is_some()
+                            || queue.high_priority.peek().is_some()
+                        {
                             return Some(ready);
                         }
-                    },
+                    }
                     PriorityLevel::Normal => {
                         // Normal can be preempted by high
                         if queue.high_priority.peek().is_some() {
@@ -271,7 +271,6 @@ impl CpuRunQueue {
             normal_priority: LockFreeQueue::new(),
             low_priority: LockFreeQueue::new(),
             idle_priority: LockFreeQueue::new(),
-            current_pos: AtomicUsize::new(0),
             thread_count: AtomicUsize::new(0),
         }
     }

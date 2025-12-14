@@ -73,8 +73,6 @@ impl StackSizeClass {
 pub struct Stack {
     /// Pointer to the start of the stack memory (lowest address)
     memory: NonNull<u8>,
-    /// Total size of allocated memory (including guard pages)
-    total_size: usize,
     /// Usable stack size (excluding guard pages)
     usable_size: usize,
     /// Size class this stack belongs to
@@ -240,28 +238,13 @@ impl StackPool {
     /// * `stack` - The stack to return to the pool
     pub fn deallocate(&self, stack: Stack) {
         let class_index = self.size_class_index(stack.size_class);
-        
-        // TODO: In a hardened implementation, we might want to wipe the stack memory
-        #[cfg(feature = "hardened")]
-        {
-            // Wipe stack memory for security
-            unsafe {
-                core::ptr::write_bytes(
-                    stack.memory.as_ptr(),
-                    0,
-                    stack.usable_size,
-                );
-            }
-        }
-        
+
         if let Some(mut free_list) = self.free_stacks[class_index].try_lock() {
             free_list.push(stack);
             self.stats.in_use.fetch_sub(1, Ordering::AcqRel);
             self.stats.deallocated.fetch_add(1, Ordering::AcqRel);
-        } else {
-            // If we can't get the lock, just leak the stack for now
-            // In a real implementation, we might want a different strategy
         }
+        // If we can't get the lock, the stack will be dropped
     }
     
     /// Get statistics about the stack pool.
@@ -286,77 +269,55 @@ impl StackPool {
     /// Allocate a new stack of the given size class.
     fn allocate_new_stack(&self, size_class: StackSizeClass) -> Option<Stack> {
         let usable_size = size_class.size();
-        let has_guard_pages = cfg!(feature = "mmu");
-        
-        // Calculate total size including guard pages
-        let total_size = if has_guard_pages {
-            usable_size + 8192 // Guard pages at both ends
-        } else {
-            usable_size
-        };
-        
-        // TODO: Replace with proper no_std memory allocation
+
         #[cfg(feature = "std-shim")]
         {
             extern crate std;
             use std::alloc::{alloc, Layout};
-            
-            let layout = Layout::from_size_align(total_size, 4096).ok()?;
+
+            let layout = Layout::from_size_align(usable_size, 4096).ok()?;
             let memory = unsafe { alloc(layout) };
-            
+
             if memory.is_null() {
                 return None;
             }
-            
+
             let memory = unsafe { NonNull::new_unchecked(memory) };
-            
-            // Set up guard pages if MMU feature is enabled
-            #[cfg(feature = "mmu")]
-            if has_guard_pages {
-                self.setup_guard_pages(&memory, total_size);
-            }
-            
+
             let stack = Stack {
                 memory,
-                total_size,
                 usable_size,
                 size_class,
-                has_guard_pages,
+                has_guard_pages: false,
             };
-            
+
             self.stats.allocated.fetch_add(1, Ordering::AcqRel);
             self.stats.in_use.fetch_add(1, Ordering::AcqRel);
-            
+
             Some(stack)
         }
-        
+
         #[cfg(not(feature = "std-shim"))]
         {
-            unimplemented!("Stack allocation requires a custom allocator in no_std environments")
+            // In bare-metal mode, stacks are allocated from a fixed memory region
+            // This is handled by the bump allocator in the example
+            let _ = usable_size;
+            unimplemented!("Stack allocation in bare-metal requires custom allocator")
         }
-    }
-    
-    /// Set up guard pages for a stack allocation.
-    #[cfg(feature = "mmu")]
-    fn setup_guard_pages(&self, _memory: &NonNull<u8>, _total_size: usize) {
-        // TODO: Use mprotect or similar to make guard pages non-accessible
-        // This would require platform-specific code
-        unimplemented!("Guard page setup requires platform-specific MMU manipulation")
     }
 }
 
 impl Drop for Stack {
     fn drop(&mut self) {
-        // TODO: In a real implementation, we'd need to coordinate with the
-        // stack pool to properly deallocate memory
         #[cfg(feature = "std-shim")]
         {
             extern crate std;
             use std::alloc::{dealloc, Layout};
-            
-            let layout = Layout::from_size_align(self.total_size, 4096).unwrap();
-            unsafe {
-                dealloc(self.memory.as_ptr(), layout);
+
+            if let Ok(layout) = Layout::from_size_align(self.usable_size, 4096) {
+                unsafe {
+                    dealloc(self.memory.as_ptr(), layout);
+                }
             }
         }
     }

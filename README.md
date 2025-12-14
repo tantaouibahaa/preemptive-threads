@@ -1,248 +1,159 @@
-# Preemptive Threads for Raspberry Pi Zero 2 W
+# preemptive-threads
 
-A bare-metal preemptive multithreading kernel for the Raspberry Pi Zero 2 W.
+Run multiple tasks simultaneously on a Raspberry Pi Zero 2 W — without Linux.
 
-## Target Platform
+## What Is This?
 
-| | |
-|---|---|
-| **Hardware** | Raspberry Pi Zero 2 W |
-| **SoC** | Broadcom BCM2837 |
-| **CPU** | ARM Cortex-A53 (quad-core, 64-bit) |
-| **Architecture** | AArch64 / ARMv8-A |
-| **Environment** | Bare-metal (no operating system) |
+A tiny kernel that lets you run multiple "threads" on bare metal. The CPU rapidly switches between tasks (1000 times/second), making them appear to run at the same time.
 
-## Status
+**Perfect for:**
+- Learning how operating systems work
+- Embedded projects that need multitasking
+- Robotics where you need motor control + sensors + communication running together
 
-**Alpha** - Core functionality implemented, not yet tested on real hardware.
+## Quick Example
 
-### Implemented
+```rust
+use preemptive_threads::{Kernel, uart_println};
 
-- Context switching (ARM64 with full register save/restore)
-- NEON/FPU state save/restore
-- ARM Generic Timer for preemption
-- GIC-400 interrupt controller driver
-- Thread spawning with closure support
-- Round-robin scheduler with priority levels
-- Stack pool allocator
-- JoinHandle for thread synchronization
+// Create threads that run "simultaneously"
+KERNEL.spawn(|| {
+    loop {
+        uart_println!("Thread 1 says hi!");
+        // Do some work...
+    }
+}, 128);
 
-### Not Yet Implemented
+KERNEL.spawn(|| {
+    loop {
+        uart_println!("Thread 2 says hi!");
+        // Do other work...
+    }
+}, 128);
 
-- Multi-core support (currently single-core only)
-- MMU / virtual memory
-- UART output for debugging
-- Real hardware testing
-- Thread-local storage
+// Start running - threads will alternate automatically
+KERNEL.start_first_thread();
+```
 
-## Quick Start
+Output:
+```
+Thread 1 says hi!
+Thread 2 says hi!
+Thread 1 says hi!
+Thread 2 says hi!
+...
+```
 
-### Prerequisites
+## Getting Started
+
+### 1. Install Tools
 
 ```bash
-# Install Rust (nightly recommended for bare-metal)
-rustup install nightly
-rustup default nightly
-
-# Add the bare-metal ARM64 target
 rustup target add aarch64-unknown-none
-
-# Install rust-src for build-std (optional, for optimized builds)
-rustup component add rust-src
-
-# Install objcopy for creating kernel images
 cargo install cargo-binutils
 rustup component add llvm-tools
 ```
 
-### Build
+### 2. Build
 
 ```bash
-# Build the library
-cargo build --release --target aarch64-unknown-none
-
-# Build the example kernel
 cargo build --release --example rpi_kernel --target aarch64-unknown-none
+rust-objcopy -O binary target/aarch64-unknown-none/release/examples/rpi_kernel kernel8.img
 ```
 
-### Deploy to Raspberry Pi
+### 3. Test in Emulator (Optional)
 
-1. **Convert ELF to raw binary:**
-   ```bash
-   rust-objcopy -O binary \
-       target/aarch64-unknown-none/release/examples/rpi_kernel \
-       kernel8.img
+```bash
+brew install qemu  # or apt install qemu-system-arm on Linux
+qemu-system-aarch64 -M raspi3b -kernel kernel8.img -serial stdio -display none
+```
+
+### 4. Run on Real Hardware
+
+**You need:**
+- Raspberry Pi Zero 2 W
+- MicroSD card (any size)
+- USB-to-serial adapter (to see output)
+
+**Steps:**
+1. Format SD card as FAT32
+2. Copy `kernel8.img` to the card
+3. Download [Raspberry Pi firmware](https://github.com/raspberrypi/firmware/tree/master/boot) and copy `bootcode.bin`, `start.elf`, `fixup.dat`
+4. Create `config.txt`:
    ```
+   arm_64bit=1
+   kernel=kernel8.img
+   ```
+5. Wire up serial: GPIO14→RX, GPIO15→TX, GND→GND
+6. Open terminal: `screen /dev/tty.usbserial* 115200`
+7. Power on!
 
-2. **Prepare SD card:**
-   - Format a microSD card with FAT32
-   - Copy `kernel8.img` to the root
-   - Download Raspberry Pi firmware files from [raspberrypi/firmware](https://github.com/raspberrypi/firmware/tree/master/boot):
-     - `bootcode.bin`
-     - `start.elf`
-     - `fixup.dat`
-   - Create `config.txt` with:
-     ```
-     arm_64bit=1
-     kernel=kernel8.img
-     ```
+## Features
 
-3. **Boot:**
-   - Insert SD card into Pi Zero 2 W
-   - Connect power
-   - The kernel will start running threads
+| Feature | What It Does |
+|---------|--------------|
+| Preemptive scheduling | Threads switch automatically (no manual yielding needed) |
+| Priority levels | Important threads run first |
+| UART output | Print debug messages over serial |
+| NEON/FPU support | Floating-point math works in threads |
 
-## Usage
+## Status
+
+**Alpha** - Works, but not battle-tested. Good for learning and experiments.
+
+- ✅ Context switching
+- ✅ Timer-based preemption
+- ✅ Thread spawning
+- ✅ Priority scheduler
+- ✅ UART debug output
+- ❌ Multi-core (uses 1 of 4 cores)
+- ❌ Memory protection
+- ❌ Filesystem
+
+## API Reference
 
 ```rust
-#![no_std]
-#![no_main]
-
-extern crate alloc;
-
-use preemptive_threads::{
-    Kernel,
-    arch::{Arch, DefaultArch},
-    sched::RoundRobinScheduler,
-};
-use spin::Lazy;
-
-// Use Lazy for runtime initialization
+// Create kernel
 static KERNEL: Lazy<Kernel<DefaultArch, RoundRobinScheduler>> =
     Lazy::new(|| Kernel::new(RoundRobinScheduler::new(1)));
 
-#[no_mangle]
-pub fn kernel_main() -> ! {
-    KERNEL.init().unwrap();
+// Initialize
+KERNEL.init().unwrap();
 
-    unsafe { KERNEL.register_global(); }
+// Spawn thread (closure + priority 0-255)
+KERNEL.spawn(|| { /* code */ }, 128).unwrap();
 
-    // Spawn threads with closures
-    KERNEL.spawn(|| {
-        loop {
-            // Thread 1 work
-            preemptive_threads::yield_now();
-        }
-    }, 128).unwrap();
+// Start scheduler
+KERNEL.start_first_thread();
 
-    KERNEL.spawn(|| {
-        loop {
-            // Thread 2 work
-            preemptive_threads::yield_now();
-        }
-    }, 128).unwrap();
+// Yield current thread voluntarily
+preemptive_threads::yield_now();
 
-    // Enable timer preemption (1ms time slices)
-    unsafe {
-        preemptive_threads::arch::aarch64::setup_preemption_timer(1000).unwrap();
-    }
-
-    // Enable interrupts and start first thread
-    DefaultArch::enable_interrupts();
-    KERNEL.start_first_thread();
-
-    loop {
-        unsafe { core::arch::asm!("wfe"); }
-    }
-}
+// Print to serial
+uart_println!("Hello {}", name);
 ```
-
-## Testing
-
-### QEMU Emulation (Development Machine)
-
-You can test on QEMU before deploying to real hardware:
-
-```bash
-# Install QEMU
-brew install qemu          # macOS
-# apt install qemu-system-arm  # Linux
-
-# Build the kernel
-cargo build --release --example rpi_kernel --target aarch64-unknown-none
-
-# Convert to binary
-rust-objcopy -O binary \
-    target/aarch64-unknown-none/release/examples/rpi_kernel \
-    kernel8.img
-
-# Run in QEMU (Raspberry Pi 3 machine, closest to Pi Zero 2 W)
-qemu-system-aarch64 \
-    -M raspi3b \
-    -kernel kernel8.img \
-    -serial stdio \
-    -display none
-```
-
-Note: QEMU's Raspberry Pi emulation may differ from real hardware, especially for interrupts and timing.
-
-### Host Unit Tests
-
-For quick iteration without cross-compilation:
-
-```bash
-cargo test --features std-shim
-```
-
-## Memory Layout
-
-The default linker script (`rpi0w2.ld`) defines:
-
-| Region | Address | Size | Purpose |
-|--------|---------|------|---------|
-| Kernel code | `0x80000` | Variable | Code and data |
-| Vectors | Aligned 2KB | 2 KB | Exception vector table |
-| Stack | After BSS | 1 MB | Kernel stack |
-| Heap | After stack | 16 MB | Dynamic allocation |
 
 ## Project Structure
 
 ```
-preemptive_threads/
-├── src/
-│   ├── lib.rs              # Public API exports
-│   ├── kernel.rs           # Main kernel API
-│   ├── errors.rs           # Error types
-│   ├── arch/
-│   │   ├── mod.rs          # Arch trait definition
-│   │   ├── aarch64.rs      # ARM64 context switch, timer
-│   │   ├── aarch64_gic.rs  # GIC-400 interrupt controller
-│   │   ├── aarch64_vectors.rs  # Exception handlers
-│   │   ├── aarch64_boot.rs # Boot/startup code
-│   │   ├── barriers.rs     # Memory barriers
-│   │   └── detection.rs    # CPU feature detection
-│   ├── sched/
-│   │   ├── mod.rs          # Scheduler trait
-│   │   └── rr.rs           # Round-robin scheduler
-│   ├── mem/
-│   │   ├── mod.rs          # Memory exports
-│   │   ├── stack_pool.rs   # Stack allocation
-│   │   └── arc_lite.rs     # Lightweight Arc
-│   ├── thread_new/
-│   │   ├── mod.rs          # Thread abstraction
-│   │   ├── handle.rs       # JoinHandle
-│   │   └── builder.rs      # ThreadBuilder
-│   └── time/
-│       └── mod.rs          # Time types (Duration, Instant)
-├── rpi0w2.ld               # Linker script
-├── .cargo/config.toml      # Build configuration
-└── examples/
-    └── rpi_kernel.rs       # Example kernel
+src/
+├── kernel.rs      # Main API (spawn, start)
+├── arch/          # Hardware drivers (ARM64, UART, interrupts)
+├── sched/         # Scheduler (decides who runs next)
+├── thread_new/    # Thread management
+├── mem/           # Stack allocation
+└── time/          # Time utilities
+
+examples/
+└── rpi_kernel.rs  # Example kernel you can modify
 ```
 
-## Features
+## Limitations
 
-| Feature | Description | Default |
-|---------|-------------|---------|
-| `full-fpu` | Save/restore NEON/FPU registers on context switch | Yes |
-| `std-shim` | Enable std compatibility for host testing | No |
-
-## Hardware Requirements
-
-- Raspberry Pi Zero 2 W
-- microSD card (any size, FAT32 formatted)
-- 5V power supply (micro USB)
-- (Optional) USB-to-serial adapter for UART debugging
+- **Single core only** - Uses 1 of 4 CPU cores
+- **No memory protection** - Threads can crash each other
+- **No deallocation** - Uses simple bump allocator
+- **Race conditions possible** - You must handle synchronization
 
 ## License
 
@@ -250,4 +161,4 @@ MIT OR Apache-2.0
 
 ## Contributing
 
-This is an experimental project. Issues and PRs welcome!
+Issues and PRs welcome! This is a learning project.

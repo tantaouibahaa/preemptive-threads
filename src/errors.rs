@@ -450,32 +450,32 @@ impl From<crate::time::TimerError> for TimerError {
 // Convenience constructors for common error patterns
 impl ThreadError {
     /// Create a memory error.
-    pub fn MemoryError() -> Self {
+    pub fn memory_error() -> Self {
         ThreadError::Memory(MemoryError::OutOfMemory)
     }
-    
+
     /// Create a resource exhaustion error.
-    pub fn ResourceExhaustion() -> Self {
+    pub fn resource_exhaustion() -> Self {
         ThreadError::Resource(ResourceError::ResourceUnavailable)
     }
-    
+
     /// Create an invalid state error.
-    pub fn InvalidState() -> Self {
+    pub fn invalid_state() -> Self {
         ThreadError::Schedule(ScheduleError::InvalidState)
     }
-    
+
     /// Create a permission denied error.
-    pub fn PermissionDenied() -> Self {
+    pub fn permission_denied() -> Self {
         ThreadError::Permission(PermissionError::AccessDenied)
     }
-    
+
     /// Create an unsupported operation error.
-    pub fn UnsupportedOperation(msg: String) -> Self {
+    pub fn unsupported_operation(msg: String) -> Self {
         ThreadError::InvalidOperation(InvalidOperationError::InvalidParameter(msg))
     }
-    
-    /// Create a generic "Other" error with a message.  
-    pub fn Other(msg: String) -> Self {
+
+    /// Create a generic error with a message.
+    pub fn other(msg: String) -> Self {
         ThreadError::InvalidOperation(InvalidOperationError::InvalidParameter(msg))
     }
 }

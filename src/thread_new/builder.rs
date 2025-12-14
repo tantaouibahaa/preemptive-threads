@@ -82,7 +82,7 @@ impl ThreadBuilder {
             name: None,
             cpu_affinity: None,
             group_id: None,
-            stack_guard_pages: cfg!(feature = "mmu"),
+            stack_guard_pages: false, // No MMU support currently
             stack_canary: true,
             custom_canary: None,
             time_slice: None,
@@ -251,12 +251,6 @@ impl ThreadBuilder {
             let size_class = self.stack_size_class.unwrap_or(StackSizeClass::Small);
             stack_pool.allocate(size_class).ok_or(SpawnError::OutOfMemory)?
         };
-        
-        // Set up stack protection if enabled
-        if self.stack_guard_pages && cfg!(feature = "mmu") {
-            // In a real implementation, we would configure MMU guard pages here
-            // This would involve platform-specific memory protection calls
-        }
         
         // Set up stack canary if enabled
         if self.stack_canary {

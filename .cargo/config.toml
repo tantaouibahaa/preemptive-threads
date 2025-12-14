@@ -14,8 +14,8 @@ rustflags = [
     # Optimize for Cortex-A53
     "-C", "target-cpu=cortex-a53",
 
-    # Enable NEON/FP
-    "-C", "target-feature=+neon,+fp-armv8",
+    # Enable NEON (fp-armv8 is automatically enabled with neon)
+    "-C", "target-feature=+neon",
 
     # Use LLD linker (faster, better cross-compilation)
     "-C", "linker=rust-lld",

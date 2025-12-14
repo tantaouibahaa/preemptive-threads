@@ -229,17 +229,17 @@ mod tests {
     
     #[test]
     fn test_time_slice() {
-        let slice = TimeSlice::new(128); // Normal priority
-        assert_eq!(slice.priority(), 128);
+        let slice = TimeSlice::new(100); // Normal priority (64-127 range gets base quantum)
+        assert_eq!(slice.priority(), 100);
         assert_eq!(slice.vruntime(), 0);
-        
+
         let start_time = Instant::from_nanos(1000000);
         slice.start_slice(start_time);
-        
+
         // Time slice shouldn't expire immediately
         assert!(!slice.update_vruntime(start_time));
-        
-        // After quantum duration, it should expire
+
+        // After quantum duration, it should expire (base quantum for priority 100)
         let end_time = Instant::from_nanos(start_time.as_nanos() + DEFAULT_QUANTUM_NS + 1);
         assert!(slice.update_vruntime(end_time));
     }
