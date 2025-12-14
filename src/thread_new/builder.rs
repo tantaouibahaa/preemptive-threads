@@ -60,7 +60,7 @@ pub struct ThreadAttributes {
 }
 
 /// Resource limits for threads.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ResourceLimits {
     /// Maximum CPU time (in nanoseconds)
     max_cpu_time: Option<u64>,
@@ -220,7 +220,7 @@ impl ThreadBuilder {
         
         // Determine stack size
         let stack_size = if let Some(custom_size) = self.custom_stack_size {
-            if custom_size < 4096 || custom_size > 16 * 1024 * 1024 {
+            if !(4096..=16 * 1024 * 1024).contains(&custom_size) {
                 return Err(SpawnError::InvalidStackSize(custom_size));
             }
             custom_size
@@ -254,11 +254,8 @@ impl ThreadBuilder {
         
         // Set up stack canary if enabled
         if self.stack_canary {
-            let canary_value = self.custom_canary.unwrap_or_else(|| {
-                // Generate a random canary value
-                // In a real implementation, we would use a proper CSPRNG
-                0xDEADBEEFCAFEBABE
-            });
+            // Default canary value (in a real implementation, use a proper CSPRNG)
+            let canary_value = self.custom_canary.unwrap_or(0xDEADBEEFCAFEBABE);
             
             // Store canary at the bottom of the stack
             unsafe {
@@ -352,18 +349,6 @@ impl Default for ThreadAttributes {
         }
     }
 }
-
-impl Default for ResourceLimits {
-    fn default() -> Self {
-        Self {
-            max_cpu_time: None,
-            max_memory: None,
-            max_files: None,
-            max_children: None,
-        }
-    }
-}
-
 
 #[cfg(test)]
 mod tests {

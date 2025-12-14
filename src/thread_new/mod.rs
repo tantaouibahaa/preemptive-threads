@@ -165,6 +165,7 @@ impl Thread {
             state: AtomicU8::new(ThreadState::Ready as u8),
             priority: AtomicU8::new(priority),
             stack: Some(stack),
+            #[allow(clippy::unit_arg)]
             context: spin::Mutex::new(Default::default()), // Initialize with default context
             entry_point: Some(entry_point),
             join_result: spin::Mutex::new(None),

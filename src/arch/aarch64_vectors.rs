@@ -51,6 +51,11 @@ macro_rules! vector_entry {
 ///
 /// Must be 2048-byte aligned and placed in the `.vectors` section.
 /// Each of the 16 entries is 128 bytes apart.
+///
+/// # Safety
+///
+/// This is a naked function that sets up the exception vector table.
+/// Must be installed at boot via VBAR_EL1 register.
 #[cfg(target_arch = "aarch64")]
 #[link_section = ".vectors"]
 #[no_mangle]

@@ -141,11 +141,15 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
 
             // Thread finished - just loop forever with interrupts enabled
             // Preemption will handle scheduling other threads
+            #[allow(clippy::empty_loop)]
             loop {
                 #[cfg(target_arch = "aarch64")]
                 unsafe {
                     core::arch::asm!("wfe", options(nomem, nostack));
                 }
+                // On non-aarch64 (std-shim testing), hint to pause
+                #[cfg(not(target_arch = "aarch64"))]
+                core::hint::spin_loop();
             }
         }
 
@@ -160,7 +164,7 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
 
         // Set up the initial context to start at the trampoline with closure_ptr as arg
         thread.setup_initial_context(
-            thread_trampoline::<F> as usize,
+            thread_trampoline::<F> as *const () as usize,
             stack_bottom as usize,
             closure_ptr as usize,
         );

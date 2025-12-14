@@ -162,6 +162,10 @@ impl Gic400 {
     /// # Arguments
     ///
     /// * `irq` - Interrupt number to enable (0-1019)
+    ///
+    /// # Safety
+    ///
+    /// Must be called after GIC initialization. IRQ number must be valid.
     pub unsafe fn enable_irq(irq: u32) {
         let reg_offset = (irq / 32) as usize * 4;
         let bit = 1u32 << (irq % 32);
@@ -178,6 +182,10 @@ impl Gic400 {
     /// # Arguments
     ///
     /// * `irq` - Interrupt number to disable (0-1019)
+    ///
+    /// # Safety
+    ///
+    /// Must be called after GIC initialization. IRQ number must be valid.
     pub unsafe fn disable_irq(irq: u32) {
         let reg_offset = (irq / 32) as usize * 4;
         let bit = 1u32 << (irq % 32);
@@ -195,6 +203,10 @@ impl Gic400 {
     ///
     /// * `irq` - Interrupt number (0-1019)
     /// * `priority` - Priority level (0 = highest, 255 = lowest)
+    ///
+    /// # Safety
+    ///
+    /// Must be called after GIC initialization. IRQ number must be valid.
     pub unsafe fn set_priority(irq: u32, priority: u8) {
         let reg_offset = irq as usize;
         let byte_offset = reg_offset & 3;
@@ -211,6 +223,10 @@ impl Gic400 {
     /// Enable the physical timer interrupt.
     ///
     /// This enables IRQ 30 (EL1 Physical Timer) with medium priority.
+    ///
+    /// # Safety
+    ///
+    /// Must be called after GIC initialization.
     pub unsafe fn enable_timer_interrupt() {
         // Set medium priority for timer
         unsafe {
@@ -224,6 +240,10 @@ impl Gic400 {
     }
 
     /// Disable the physical timer interrupt.
+    ///
+    /// # Safety
+    ///
+    /// Must be called after GIC initialization.
     pub unsafe fn disable_timer_interrupt() {
         unsafe {
             Self::disable_irq(TIMER_IRQ);
@@ -238,6 +258,10 @@ impl Gic400 {
     /// # Returns
     ///
     /// The interrupt number (0-1019) or SPURIOUS_IRQ (1023) if spurious.
+    ///
+    /// # Safety
+    ///
+    /// Must be called from interrupt context after GIC initialization.
     #[inline]
     pub unsafe fn acknowledge_interrupt() -> u32 {
         unsafe { read_volatile((GICC_BASE + GICC_IAR) as *const u32) & 0x3FF }
@@ -251,6 +275,10 @@ impl Gic400 {
     /// # Arguments
     ///
     /// * `irq` - The interrupt number that was acknowledged
+    ///
+    /// # Safety
+    ///
+    /// Must be called after `acknowledge_interrupt` with the returned IRQ number.
     #[inline]
     pub unsafe fn end_interrupt(irq: u32) {
         unsafe {
@@ -277,6 +305,10 @@ impl Gic400 {
     }
 
     /// Set an interrupt to pending (software trigger).
+    ///
+    /// # Safety
+    ///
+    /// Must be called after GIC initialization. IRQ number must be valid.
     pub unsafe fn set_pending(irq: u32) {
         let reg_offset = (irq / 32) as usize * 4;
         let bit = 1u32 << (irq % 32);
@@ -289,6 +321,10 @@ impl Gic400 {
     }
 
     /// Clear a pending interrupt.
+    ///
+    /// # Safety
+    ///
+    /// Must be called after GIC initialization. IRQ number must be valid.
     pub unsafe fn clear_pending(irq: u32) {
         let reg_offset = (irq / 32) as usize * 4;
         let bit = 1u32 << (irq % 32);

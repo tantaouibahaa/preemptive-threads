@@ -254,6 +254,10 @@ pub fn init() {
 }
 
 /// Set up ARM64 timer for preemption with specified interval in microseconds.
+///
+/// # Safety
+///
+/// Must be called from privileged mode (EL1). Modifies system timer registers.
 pub unsafe fn setup_preemption_timer(interval_us: u32) -> Result<(), &'static str> {
     let freq = TIMER_FREQ.load(Ordering::Relaxed);
     if freq == 0 {
@@ -327,6 +331,10 @@ pub fn ns_to_ticks(ns: u64) -> u64 {
 /// This is called from the IRQ vector when the timer fires.
 /// It acknowledges the interrupt, triggers a context switch if needed,
 /// and re-arms the timer.
+///
+/// # Safety
+///
+/// Must only be called from the IRQ exception handler in privileged mode.
 pub unsafe fn timer_interrupt_handler() {
     // Clear the timer interrupt by disabling and re-enabling
     unsafe {
@@ -348,10 +356,8 @@ pub unsafe fn timer_interrupt_handler() {
         }
 
         // Re-setup timer for next preemption (1ms default)
-        if setup_preemption_timer(1000).is_err() {
-            // Timer setup failed, disable preemption
-            return;
-        }
+        // If timer setup fails, preemption is disabled
+        let _ = setup_preemption_timer(1000);
     }
 }
 
@@ -375,6 +381,10 @@ pub fn memory_barrier_release() {
 }
 
 /// CPU cache maintenance for ARM64.
+///
+/// # Safety
+///
+/// The memory range `[start, start + len)` must be valid and properly aligned.
 pub unsafe fn flush_dcache_range(start: *const u8, len: usize) {
     unsafe {
         let end = start.add(len);
@@ -395,6 +405,10 @@ pub unsafe fn flush_dcache_range(start: *const u8, len: usize) {
 }
 
 /// Invalidate instruction cache for ARM64.
+///
+/// # Safety
+///
+/// Must be called from privileged mode. Affects all instruction caches.
 pub unsafe fn flush_icache() {
     unsafe {
         asm!(

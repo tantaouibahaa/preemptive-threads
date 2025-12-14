@@ -71,8 +71,12 @@ impl Instant {
         Duration::from_nanos(self.0 - earlier.0)
     }
     
-    /// Add a duration to this instant.
-    pub fn add(self, duration: Duration) -> Self {
+}
+
+impl core::ops::Add<Duration> for Instant {
+    type Output = Self;
+
+    fn add(self, duration: Duration) -> Self {
         Self(self.0 + duration.as_nanos())
     }
 }

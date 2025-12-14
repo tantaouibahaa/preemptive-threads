@@ -3,6 +3,8 @@
 //! This module provides detailed error types for all threading operations,
 //! enabling proper error handling and debugging throughout the system.
 
+#![allow(clippy::uninlined_format_args)]
+
 use core::fmt;
 extern crate alloc;
 use alloc::string::String;

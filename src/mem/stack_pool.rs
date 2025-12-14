@@ -186,6 +186,12 @@ struct StackPoolStats {
     in_use: AtomicUsize,
 }
 
+impl Default for StackPool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl StackPool {
     /// Create a new stack pool.
     pub const fn new() -> Self {
