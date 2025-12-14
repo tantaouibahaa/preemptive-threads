@@ -1,7 +1,7 @@
 //! Cross-platform memory barriers and atomic operation helpers.
 //!
-//! This module provides unified memory barrier operations across different
-//! CPU architectures, ensuring proper memory ordering in lock-free code.
+//! This module provides unified memory barrier operations, primarily for
+//! ARM64 (AArch64) architecture used in Raspberry Pi Zero 2 W.
 
 use portable_atomic::{AtomicU64, AtomicUsize, Ordering};
 
@@ -34,66 +34,52 @@ impl MemoryBarriers {
             BarrierType::StoreOnly => Self::store_barrier(),
         }
     }
-    
+
     /// Full memory barrier - prevents reordering of any memory operations.
     #[inline(always)]
     pub fn full_barrier() {
-        #[cfg(feature = "x86_64")]
-        crate::arch::x86_64::memory_barrier_full();
-        
-        #[cfg(feature = "arm64")]
-        crate::arch::aarch64::memory_barrier_full();
-        
-        #[cfg(feature = "riscv64")]
-        crate::arch::riscv::memory_barrier_full();
-        
-        #[cfg(not(any(feature = "x86_64", feature = "arm64", feature = "riscv64")))]
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            core::arch::asm!("dmb sy", options(nostack, preserves_flags));
+        }
+
+        #[cfg(not(target_arch = "aarch64"))]
         core::sync::atomic::fence(Ordering::SeqCst);
     }
-    
+
     /// Acquire barrier - prevents loads from being reordered before this point.
     #[inline(always)]
     pub fn acquire_barrier() {
-        #[cfg(feature = "x86_64")]
-        crate::arch::x86_64::memory_barrier_acquire();
-        
-        #[cfg(feature = "arm64")]
-        crate::arch::aarch64::memory_barrier_acquire();
-        
-        #[cfg(feature = "riscv64")]
-        crate::arch::riscv::memory_barrier_acquire();
-        
-        #[cfg(not(any(feature = "x86_64", feature = "arm64", feature = "riscv64")))]
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            core::arch::asm!("dmb ld", options(nostack, preserves_flags));
+        }
+
+        #[cfg(not(target_arch = "aarch64"))]
         core::sync::atomic::fence(Ordering::Acquire);
     }
-    
+
     /// Release barrier - prevents stores from being reordered after this point.
     #[inline(always)]
     pub fn release_barrier() {
-        #[cfg(feature = "x86_64")]
-        crate::arch::x86_64::memory_barrier_release();
-        
-        #[cfg(feature = "arm64")]
-        crate::arch::aarch64::memory_barrier_release();
-        
-        #[cfg(feature = "riscv64")]
-        crate::arch::riscv::memory_barrier_release();
-        
-        #[cfg(not(any(feature = "x86_64", feature = "arm64", feature = "riscv64")))]
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            core::arch::asm!("dmb st", options(nostack, preserves_flags));
+        }
+
+        #[cfg(not(target_arch = "aarch64"))]
         core::sync::atomic::fence(Ordering::Release);
     }
-    
+
     /// Load barrier - orders load operations only.
     #[inline(always)]
     pub fn load_barrier() {
-        // On most architectures, this is the same as acquire
         Self::acquire_barrier();
     }
-    
+
     /// Store barrier - orders store operations only.
     #[inline(always)]
     pub fn store_barrier() {
-        // On most architectures, this is the same as release
         Self::release_barrier();
     }
 }
@@ -108,16 +94,16 @@ pub trait AtomicExt<T> {
         success_order: Ordering,
         failure_order: Ordering,
     ) -> Result<T, T>;
-    
+
     /// Atomic fetch-and-add with explicit memory ordering.
     fn fetch_add_explicit(&self, val: T, order: Ordering) -> T;
-    
+
     /// Atomic fetch-and-subtract with explicit memory ordering.
     fn fetch_sub_explicit(&self, val: T, order: Ordering) -> T;
-    
+
     /// Atomic load with memory barrier.
     fn load_with_barrier(&self, barrier: BarrierType) -> T;
-    
+
     /// Atomic store with memory barrier.
     fn store_with_barrier(&self, val: T, barrier: BarrierType);
 }
@@ -132,15 +118,15 @@ impl AtomicExt<u64> for AtomicU64 {
     ) -> Result<u64, u64> {
         self.compare_exchange(current, new, success_order, failure_order)
     }
-    
+
     fn fetch_add_explicit(&self, val: u64, order: Ordering) -> u64 {
         self.fetch_add(val, order)
     }
-    
+
     fn fetch_sub_explicit(&self, val: u64, order: Ordering) -> u64 {
         self.fetch_sub(val, order)
     }
-    
+
     fn load_with_barrier(&self, barrier: BarrierType) -> u64 {
         match barrier {
             BarrierType::Full => {
@@ -157,7 +143,7 @@ impl AtomicExt<u64> for AtomicU64 {
             _ => self.load(Ordering::SeqCst),
         }
     }
-    
+
     fn store_with_barrier(&self, val: u64, barrier: BarrierType) {
         match barrier {
             BarrierType::Full => {
@@ -185,15 +171,15 @@ impl AtomicExt<usize> for AtomicUsize {
     ) -> Result<usize, usize> {
         self.compare_exchange(current, new, success_order, failure_order)
     }
-    
+
     fn fetch_add_explicit(&self, val: usize, order: Ordering) -> usize {
         self.fetch_add(val, order)
     }
-    
+
     fn fetch_sub_explicit(&self, val: usize, order: Ordering) -> usize {
         self.fetch_sub(val, order)
     }
-    
+
     fn load_with_barrier(&self, barrier: BarrierType) -> usize {
         match barrier {
             BarrierType::Full => {
@@ -210,7 +196,7 @@ impl AtomicExt<usize> for AtomicUsize {
             _ => self.load(Ordering::SeqCst),
         }
     }
-    
+
     fn store_with_barrier(&self, val: usize, barrier: BarrierType) {
         match barrier {
             BarrierType::Full => {
@@ -251,46 +237,43 @@ impl LockFreeUtils {
             }
         }
     }
-    
+
     /// Perform an atomic increment with overflow protection.
     pub fn atomic_increment_bounded(atomic: &AtomicU64, max_value: u64) -> Result<u64, u64> {
         let final_val = Self::atomic_update(atomic, |current| {
             if current >= max_value {
-                current // No change if at max
+                current
             } else {
                 current + 1
             }
         });
-        
+
         if final_val > max_value {
             Err(final_val)
         } else {
             Ok(final_val)
         }
     }
-    
+
     /// Perform an atomic decrement with underflow protection.
     pub fn atomic_decrement_bounded(atomic: &AtomicU64, min_value: u64) -> Result<u64, u64> {
         let final_val = Self::atomic_update(atomic, |current| {
             if current <= min_value {
-                current // No change if at min
+                current
             } else {
                 current - 1
             }
         });
-        
+
         if final_val < min_value {
             Err(final_val)
         } else {
             Ok(final_val)
         }
     }
-    
+
     /// Double-checked locking pattern helper.
-    pub fn double_checked_init<T, F>(
-        atomic_flag: &AtomicUsize,
-        initializer: F,
-    ) -> bool
+    pub fn double_checked_init<T, F>(atomic_flag: &AtomicUsize, initializer: F) -> bool
     where
         F: FnOnce() -> T,
     {
@@ -298,10 +281,10 @@ impl LockFreeUtils {
         if atomic_flag.load(Ordering::Acquire) != 0 {
             return true;
         }
-        
+
         // Slow path - try to initialize
         MemoryBarriers::full_barrier();
-        
+
         // Check again after barrier
         if atomic_flag.load(Ordering::Acquire) == 0 {
             // Try to claim initialization
@@ -311,18 +294,18 @@ impl LockFreeUtils {
             {
                 // We won the race, perform initialization
                 let _result = initializer();
-                
+
                 // Mark as fully initialized
                 atomic_flag.store(2, Ordering::Release);
                 return true;
             }
         }
-        
+
         // Wait for initialization to complete
         while atomic_flag.load(Ordering::Acquire) == 1 {
             core::hint::spin_loop();
         }
-        
+
         atomic_flag.load(Ordering::Acquire) == 2
     }
 }
@@ -331,24 +314,17 @@ impl LockFreeUtils {
 pub struct CacheInfo;
 
 impl CacheInfo {
-    /// Get the cache line size for the current architecture.
+    /// Get the cache line size for ARM64 architecture.
     pub const fn cache_line_size() -> usize {
-        #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-        return 64; // Most common cache line size
-        
-        #[cfg(target_arch = "riscv64")]
-        return 64; // Common for RISC-V as well
-        
-        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64")))]
-        return 64; // Safe default
+        64 // ARM Cortex-A53 cache line size
     }
-    
+
     /// Align a size to cache line boundaries.
     pub const fn align_to_cache_line(size: usize) -> usize {
         let cache_size = Self::cache_line_size();
         (size + cache_size - 1) & !(cache_size - 1)
     }
-    
+
     /// Check if an address is cache-line aligned.
     pub fn is_cache_line_aligned(addr: *const u8) -> bool {
         (addr as usize) & (Self::cache_line_size() - 1) == 0
@@ -356,11 +332,11 @@ impl CacheInfo {
 }
 
 /// Padding structure to prevent false sharing.
-#[repr(align(64))] // Align to cache line
+#[repr(align(64))]
 #[derive(Debug, Default)]
 pub struct CacheLinePadded<T> {
     pub value: T,
-    _padding: [u8; 0], // Zero-sized padding for alignment
+    _padding: [u8; 0],
 }
 
 impl<T> CacheLinePadded<T> {
@@ -370,11 +346,11 @@ impl<T> CacheLinePadded<T> {
             _padding: [],
         }
     }
-    
+
     pub fn get(&self) -> &T {
         &self.value
     }
-    
+
     pub fn get_mut(&mut self) -> &mut T {
         &mut self.value
     }

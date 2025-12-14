@@ -1,97 +1,122 @@
 #![no_std]
 #![deny(unsafe_op_in_unsafe_fn)]
-// Temporarily allow missing docs for existing code during refactoring
-#![allow(missing_docs)]
 #![forbid(unreachable_pub)]
 
-//! A `no_std` preemptive multithreading library built from scratch for OS kernels and embedded systems.
+//! Bare-metal preemptive multithreading for Raspberry Pi Zero 2 W.
 //!
-//! This library provides preemptive multithreading capabilities without requiring the standard library,
-//! making it suitable for embedded systems, OS kernels, and other resource-constrained environments.
+//! This library provides preemptive multithreading for the Raspberry Pi Zero 2 W
+//! (ARM Cortex-A53, AArch64) running in bare-metal mode without an operating system.
+//!
+//! # Target Platform
+//!
+//! - **Hardware**: Raspberry Pi Zero 2 W only
+//! - **SoC**: Broadcom BCM2837 (ARM Cortex-A53)
+//! - **Architecture**: AArch64 (ARM 64-bit)
+//! - **Environment**: Bare-metal (no operating system)
 //!
 //! # Features
 //!
-//! - `std-shim`: Enable compatibility layer for standard library
-//! - `x86_64`: Enable x86_64 architecture support  
-//! - `arm64`: Enable ARM64 architecture support
-//! - `riscv64`: Enable RISC-V 64-bit architecture support
-//! - `full-fpu`: Enable full floating point unit save/restore
-//! - `mmu`: Enable memory management unit features like guard pages
-//! - `work-stealing`: Enable work-stealing scheduler implementation
-//! - `hardened`: Enable security hardening features
+//! - `full-fpu`: Enable NEON/FPU save/restore (default)
+//! - `std-shim`: Enable compatibility layer for testing on host
+//!
+//! # Quick Start
+//!
+//! ```ignore
+//! use preemptive_threads::{Kernel, RoundRobinScheduler};
+//! use spin::Lazy;
+//!
+//! static KERNEL: Lazy<Kernel<_, RoundRobinScheduler>> =
+//!     Lazy::new(|| Kernel::new(RoundRobinScheduler::new(1)));
+//!
+//! fn kernel_main() {
+//!     KERNEL.init().expect("Failed to initialize kernel");
+//!
+//!     KERNEL.spawn(|| {
+//!         loop { /* thread work */ }
+//!     }, 128).expect("Failed to spawn thread");
+//!
+//!     KERNEL.start_first_thread();
+//! }
+//! ```
 //!
 //! # Architecture
 //!
 //! The library is organized around several key abstractions:
-//! - Architecture-specific context switching and interrupt handling
-//! - Pluggable schedulers with different algorithms
-//! - Safe memory management for thread stacks and resources
-//! - Preemptive scheduling with configurable time slices
+//! - ARM64 context switching with full register save/restore
+//! - GIC-400 interrupt controller for timer interrupts
+//! - Round-robin scheduler with priority support
+//! - Safe memory management for thread stacks
 
+// Core modules
 pub mod arch;
-pub mod atomic_scheduler;
-pub mod context;
-pub mod context_full;
-pub mod error;
 pub mod errors;
 pub mod kernel;
 pub mod mem;
-pub mod observability;
-pub mod perf;
 pub mod platform_timer;
-pub mod preemption;
-pub mod safe_api;
 pub mod sched;
-pub mod scheduler;
-pub mod security;
-pub mod signal_safe;
-pub mod stack_guard;
-pub mod sync;
-pub mod thread;
 pub mod thread_new;
 pub mod time;
-
-#[cfg(all(test, feature = "std"))]
-mod tests;
 
 #[cfg(test)]
 extern crate std;
 
-// Always need alloc for no_std environments
 extern crate alloc;
 
-// Import alloc types and macros
-
-#[cfg(all(not(test), not(feature = "std"), not(feature = "std-shim")))]
+// Panic handler for bare-metal
+#[cfg(all(not(test), not(feature = "std-shim")))]
 use core::panic::PanicInfo;
 
-#[cfg(all(not(test), not(feature = "std"), not(feature = "std-shim")))]
+#[cfg(all(not(test), not(feature = "std-shim")))]
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
-    loop {}
+    // On panic, disable interrupts and halt
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("msr daifset, #0xf", options(nomem, nostack));
+    }
+    loop {
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            core::arch::asm!("wfe", options(nomem, nostack));
+        }
+    }
 }
 
+// ============================================================================
+// Public API
+// ============================================================================
+
+// Architecture abstraction
 pub use arch::{Arch, DefaultArch};
-pub use atomic_scheduler::{AtomicScheduler, ATOMIC_SCHEDULER};
-pub use error::{ThreadError, ThreadResult};  
+
+// Kernel
 pub use kernel::{Kernel, SpawnError};
-pub use mem::{ArcLite, Stack, StackPool, StackSizeClass};
-pub use platform_timer::{init_preemption_timer, stop_preemption_timer, preemption_checkpoint};
-pub use safe_api::{
-    exit_thread as safe_exit, yield_now, Mutex, MutexGuard, ThreadBuilder as OldThreadBuilder, ThreadHandle, ThreadPool,
-};
-pub use scheduler::{Scheduler as OldScheduler, SCHEDULER};
-pub use stack_guard::{ProtectedStack, StackGuard, StackStats, StackStatus};
-pub use sync::{exit_thread, yield_thread};
-pub use thread::{Thread as OldThread, ThreadState as OldThreadState};
-pub use thread_new::{Thread, ThreadId, ThreadState, JoinHandle, ThreadBuilder, ReadyRef, RunningRef};
-pub use time::{Duration, Instant, Timer, TimerConfig, PreemptGuard, IrqGuard};
-pub use observability::{ThreadMetrics, SystemMetrics, ResourceLimiter, ThreadProfiler, HealthMonitor, ObservabilityConfig, init_observability, cleanup_observability};
 
-// Security and hardening exports
-pub use security::{SecurityConfig, SecurityViolation, SecurityStats, SecurityFeature, init_security, get_security_stats, configure_security_feature};
+// Scheduler
+pub use sched::{RoundRobinScheduler, Scheduler};
 
-// New lock-free scheduler exports
-pub use sched::{Scheduler as NewScheduler, CpuId, RoundRobinScheduler, DefaultScheduler};
-#[cfg(feature = "work-stealing")]
-pub use sched::WorkStealingScheduler;
+// Threads
+pub use thread_new::{JoinHandle, Thread, ThreadBuilder, ThreadId, ThreadState};
+
+// Memory management
+pub use mem::{Stack, StackPool, StackSizeClass};
+
+// Time
+pub use time::{Duration, Instant};
+
+// Errors
+pub use errors::{ThreadError, ThreadResult};
+
+// ============================================================================
+// Convenience Functions
+// ============================================================================
+
+/// Yield the current thread's time slice to the scheduler.
+///
+/// This is a cooperative yield - the thread voluntarily gives up the CPU
+/// to allow other threads to run. The current thread remains runnable
+/// and will be scheduled again later.
+#[inline]
+pub fn yield_now() {
+    kernel::yield_current();
+}

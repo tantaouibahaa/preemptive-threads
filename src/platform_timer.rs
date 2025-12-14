@@ -109,10 +109,10 @@ pub fn stop_preemption_timer() {
 pub fn preemption_checkpoint() {
     if is_preemption_pending() {
         clear_preemption_pending();
-        
+
         // Safe to do complex operations here - we're not in signal context
-        // Yield to scheduler - the scheduler is a global static
-        crate::sync::yield_thread();
+        // Yield to scheduler
+        crate::yield_now();
     }
 }
 

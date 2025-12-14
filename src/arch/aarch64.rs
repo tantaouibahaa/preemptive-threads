@@ -55,6 +55,9 @@ impl Default for Aarch64Context {
 unsafe impl Send for Aarch64Context {}
 unsafe impl Sync for Aarch64Context {}
 
+/// Type alias for compatibility with other modules.
+pub type SavedContext = Aarch64Context;
+
 impl Arch for Aarch64Arch {
     type SavedContext = Aarch64Context;
 
@@ -320,6 +323,10 @@ pub fn ns_to_ticks(ns: u64) -> u64 {
 }
 
 /// AArch64-specific timer interrupt handler.
+///
+/// This is called from the IRQ vector when the timer fires.
+/// It acknowledges the interrupt, triggers a context switch if needed,
+/// and re-arms the timer.
 pub unsafe fn timer_interrupt_handler() {
     // Clear the timer interrupt by disabling and re-enabling
     unsafe {
@@ -329,12 +336,17 @@ pub unsafe fn timer_interrupt_handler() {
             val = in(reg) 2u64, // Disable (bit 0 = 0) and mask (bit 1 = 1)
             options(nomem, nostack)
         );
-        
-        // Get scheduler reference and handle preemption
-        if let Some(scheduler) = crate::scheduler::get_global_scheduler() {
-            scheduler.handle_timer_interrupt();
+
+        // Get global kernel reference and handle preemption
+        // The kernel is registered via Kernel::register_global() at boot
+        use crate::arch::DefaultArch;
+        use crate::sched::RoundRobinScheduler;
+        use crate::kernel::get_global_kernel;
+
+        if let Some(kernel) = get_global_kernel::<DefaultArch, RoundRobinScheduler>() {
+            kernel.handle_timer_interrupt();
         }
-        
+
         // Re-setup timer for next preemption (1ms default)
         if setup_preemption_timer(1000).is_err() {
             // Timer setup failed, disable preemption

@@ -1,0 +1,32 @@
+# Cargo configuration for Raspberry Pi Zero 2 W bare-metal development
+#
+# Build with: cargo build --release
+# Or explicitly: cargo build --release --target aarch64-unknown-none
+
+[build]
+target = "aarch64-unknown-none"
+
+[target.aarch64-unknown-none]
+rustflags = [
+    # Use our custom linker script
+    "-C", "link-arg=-Trpi0w2.ld",
+
+    # Optimize for Cortex-A53
+    "-C", "target-cpu=cortex-a53",
+
+    # Enable NEON/FP
+    "-C", "target-feature=+neon,+fp-armv8",
+
+    # Use LLD linker (faster, better cross-compilation)
+    "-C", "linker=rust-lld",
+    "-C", "link-arg=-nostdlib",
+]
+
+# Build core and alloc from source
+[unstable]
+build-std = ["core", "alloc", "compiler_builtins"]
+build-std-features = ["compiler-builtins-mem"]
+
+# Aliases for common operations
+[alias]
+rpi = "build --release --target aarch64-unknown-none"

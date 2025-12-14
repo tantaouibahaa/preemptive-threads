@@ -1,9 +1,8 @@
 //! Round-robin scheduler implementation with lock-free queues.
 
-use super::trait_def::{Scheduler, CpuId};
+use super::trait_def::{CpuId, Scheduler};
 use crate::thread_new::{ReadyRef, RunningRef, ThreadId};
-use crate::observability::metrics::GLOBAL_METRICS;
-use portable_atomic::{AtomicUsize, AtomicPtr, Ordering};
+use portable_atomic::{AtomicPtr, AtomicUsize, Ordering};
 use core::ptr;
 extern crate alloc;
 use alloc::{boxed::Box, vec::Vec};
@@ -142,9 +141,6 @@ impl Scheduler for RoundRobinScheduler {
         priority_queue.push(thread);
         queue.thread_count.fetch_add(1, Ordering::AcqRel);
         self.runnable_threads.fetch_add(1, Ordering::AcqRel);
-        
-        // Record scheduler decision
-        GLOBAL_METRICS.get_system_metrics().record_scheduler_decision();
     }
 
     fn pick_next(&self, cpu_id: CpuId) -> Option<ReadyRef> {

@@ -3,17 +3,14 @@
 //! This module provides the new thread implementation that uses RAII
 //! for resource management and eliminates manual memory management.
 
-use crate::mem::{ArcLite, Stack};
 use crate::arch::Arch;
-use crate::time::{TimeSlice, Instant, Duration};
-use crate::observability::metrics::GLOBAL_METRICS;
-use crate::observability::resource_limits::GLOBAL_RESOURCE_LIMITER;
-// PhantomData and AtomicUsize imports not needed yet
-// use core::marker::PhantomData;
-use portable_atomic::{AtomicU8, AtomicU64, AtomicUsize, AtomicBool, Ordering};
+use crate::mem::{ArcLite, Stack};
+use crate::time::{Duration, Instant, TimeSlice};
+use portable_atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
+
 extern crate alloc;
-use alloc::string::String;
 use alloc::collections::BTreeMap;
+use alloc::string::String;
 
 pub mod handle;
 pub mod inner;
@@ -107,8 +104,8 @@ pub struct ThreadInner {
     pub priority: AtomicU8,
     /// Thread's stack
     pub stack: Option<Stack>,
-    /// Architecture-specific saved context
-    pub context: Option<*mut <crate::arch::DefaultArch as Arch>::SavedContext>,
+    /// Architecture-specific saved context (owned by the thread)
+    pub context: spin::Mutex<<crate::arch::DefaultArch as Arch>::SavedContext>,
     /// Entry point function (simplified for now)
     pub entry_point: Option<fn()>,
     /// Join result storage
@@ -168,7 +165,7 @@ impl Thread {
             state: AtomicU8::new(ThreadState::Ready as u8),
             priority: AtomicU8::new(priority),
             stack: Some(stack),
-            context: None, // Will be initialized when first context switch occurs
+            context: spin::Mutex::new(Default::default()), // Initialize with default context
             entry_point: Some(entry_point),
             join_result: spin::Mutex::new(None),
             time_slice: TimeSlice::new(priority),
@@ -188,21 +185,17 @@ impl Thread {
             max_files: AtomicU64::new(0),
             max_children: AtomicU64::new(0),
         };
-        
+
         let inner_arc = ArcLite::new(inner);
-        
+
         let thread = Self {
             inner: inner_arc.clone(),
         };
-        
+
         let join_handle = JoinHandle {
             inner: inner_arc,
         };
-        
-        // Register thread with observability systems
-        GLOBAL_METRICS.register_thread(id);
-        GLOBAL_RESOURCE_LIMITER.register_thread(id);
-        
+
         (thread, join_handle)
     }
     
@@ -245,11 +238,6 @@ impl Thread {
     pub fn set_priority(&self, new_priority: u8) {
         self.inner.priority.store(new_priority, Ordering::Release);
         self.inner.time_slice.set_priority(new_priority);
-        
-        // Record priority change in metrics
-        if GLOBAL_METRICS.is_enabled() {
-            // Priority changes are tracked automatically in thread metrics
-        }
     }
     
     /// Check if this thread is runnable (ready or running).
@@ -259,13 +247,68 @@ impl Thread {
     
     /// Get a pointer to the thread's saved context.
     ///
+    /// # Safety
+    ///
+    /// The returned pointer is only valid while the context mutex is not locked
+    /// by another thread. Caller must ensure proper synchronization.
+    ///
     /// # Returns
     ///
-    /// A pointer to the saved context, or null if not initialized.
+    /// A pointer to the saved context.
     pub fn context_ptr(&self) -> *mut <crate::arch::DefaultArch as Arch>::SavedContext {
-        // TODO: This is unsafe and needs proper synchronization
-        // For now, return a null pointer as a placeholder
-        core::ptr::null_mut()
+        // Get a pointer to the context inside the mutex
+        // This is safe because ArcLite ensures the ThreadInner stays alive
+        let ctx_guard = self.inner.context.lock();
+        // Convert the reference to a raw pointer
+        // The mutex guard will be dropped, but the pointer remains valid
+        // because ThreadInner (and thus the context) is kept alive by ArcLite
+        let ptr = &*ctx_guard as *const _ as *mut _;
+        drop(ctx_guard);
+        ptr
+    }
+
+    /// Set up the initial context for a new thread.
+    ///
+    /// This configures the context so that when context-switched to, the thread
+    /// will begin execution at the specified entry point with the given argument.
+    ///
+    /// # Arguments
+    ///
+    /// * `entry_point` - Address of the function to start executing
+    /// * `stack_top` - Top of the stack (initial SP value)
+    /// * `arg` - Argument to pass to the entry point (in x0 on ARM64)
+    pub fn setup_initial_context(&self, entry_point: usize, stack_top: usize, arg: usize) {
+        let mut ctx_guard = self.inner.context.lock();
+
+        // Set up ARM64 context
+        #[cfg(target_arch = "aarch64")]
+        {
+            // Clear all registers
+            ctx_guard.x = [0; 31];
+            // Set argument in x0
+            ctx_guard.x[0] = arg as u64;
+            // Set stack pointer
+            ctx_guard.sp = stack_top as u64;
+            // Set program counter to entry point
+            ctx_guard.pc = entry_point as u64;
+            // Set PSTATE: EL1h mode, interrupts enabled
+            ctx_guard.pstate = 0x3c5;
+
+            // Initialize FPU state if enabled
+            #[cfg(feature = "full-fpu")]
+            {
+                ctx_guard.neon_state = [0; 32];
+                ctx_guard.fpcr = 0;
+                ctx_guard.fpsr = 0;
+            }
+        }
+
+        // Fallback for non-ARM64 (testing)
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            let _ = (entry_point, stack_top, arg);
+            // NoOp context doesn't have registers
+        }
     }
     
     /// Get the thread's stack bottom (initial stack pointer).
@@ -290,9 +333,6 @@ impl Thread {
     pub fn start_time_slice(&self) {
         let current_time = Instant::now();
         self.inner.time_slice.start_slice(current_time);
-        
-        // Record context switch in metrics (this is when we switch TO this thread)
-        GLOBAL_METRICS.record_context_switch(self.id(), true); // Assume voluntary for now
     }
     
     /// Update the thread's virtual runtime and check if preemption is needed.
@@ -302,14 +342,7 @@ impl Thread {
     /// `true` if the thread's time slice has expired and it should be preempted.
     pub fn should_preempt(&self) -> bool {
         let current_time = Instant::now();
-        let should_preempt = self.inner.time_slice.update_vruntime(current_time);
-        
-        if should_preempt {
-            // Record involuntary preemption
-            GLOBAL_METRICS.record_context_switch(self.id(), false);
-        }
-        
-        should_preempt
+        self.inner.time_slice.update_vruntime(current_time)
     }
     
     /// Get the thread's current virtual runtime.
@@ -477,67 +510,6 @@ impl Thread {
     pub fn max_children(&self) -> u32 {
         self.inner.max_children.load(Ordering::Acquire) as u32
     }
-    
-    /// Record memory allocation for this thread.
-    pub fn record_memory_allocation(&self, size: u64) {
-        use crate::observability::resource_limits::{ResourceType, GLOBAL_RESOURCE_LIMITER};
-        
-        // Check resource limits
-        if let Err(_) = GLOBAL_RESOURCE_LIMITER.check_resource_limit(
-            self.id(),
-            ResourceType::Memory,
-            size,
-        ) {
-            // Handle limit violation - could log or take action
-        }
-        
-        // Update resource usage
-        GLOBAL_RESOURCE_LIMITER.update_resource_usage(
-            self.id(),
-            ResourceType::Memory,
-            size,
-        );
-    }
-    
-    /// Record memory deallocation for this thread.
-    pub fn record_memory_deallocation(&self, size: u64) {
-        use crate::observability::resource_limits::{ResourceType, GLOBAL_RESOURCE_LIMITER};
-        
-        // Update resource usage (subtract from current usage)
-        let current_usage = GLOBAL_RESOURCE_LIMITER.get_system_usage()
-            .total_memory_usage.load(Ordering::Acquire);
-        
-        let new_usage = if current_usage >= size {
-            current_usage - size
-        } else {
-            0
-        };
-        
-        GLOBAL_RESOURCE_LIMITER.update_resource_usage(
-            self.id(),
-            ResourceType::Memory,
-            new_usage,
-        );
-    }
-    
-    /// Record CPU time usage for this thread.
-    pub fn record_cpu_time(&self, duration: Duration, user_mode: bool) {
-        // Record in metrics
-        GLOBAL_METRICS.record_cpu_time(self.id(), duration, user_mode);
-        
-        // Update resource limits
-        use crate::observability::resource_limits::{ResourceType, GLOBAL_RESOURCE_LIMITER};
-        GLOBAL_RESOURCE_LIMITER.update_resource_usage(
-            self.id(),
-            ResourceType::CpuTime,
-            duration.as_nanos(),
-        );
-    }
-    
-    /// Update stack usage for this thread.
-    pub fn update_stack_usage_metrics(&self, current_usage: usize) {
-        GLOBAL_METRICS.update_stack_usage(self.id(), current_usage);
-    }
 }
 
 impl Clone for Thread {
@@ -553,14 +525,6 @@ unsafe impl Sync for Thread {}
 
 unsafe impl Send for ThreadInner {}
 unsafe impl Sync for ThreadInner {}
-
-impl Drop for ThreadInner {
-    fn drop(&mut self) {
-        // Unregister thread from observability systems
-        GLOBAL_METRICS.unregister_thread(self.id);
-        GLOBAL_RESOURCE_LIMITER.unregister_thread(self.id);
-    }
-}
 
 /// A reference to a thread that is currently ready to run.
 ///

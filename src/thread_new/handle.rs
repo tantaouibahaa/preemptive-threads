@@ -25,30 +25,18 @@ impl JoinHandle {
     /// `Ok(())` when the thread completes successfully, or `Err(())` 
     /// if the thread panicked or could not be joined.
     pub fn join(self) -> Result<(), ()> {
-        // Spin wait for the thread to finish
-        // In a real implementation, we'd want to use a more efficient
-        // wait mechanism like a condition variable or park/unpark
+        // Wait for the thread to finish
         loop {
             let state = self.inner.state.load(portable_atomic::Ordering::Acquire);
             if state == ThreadState::Finished as u8 {
                 break;
             }
-            
-            // Yield CPU to avoid busy waiting
-            #[cfg(feature = "std-shim")]
-            {
-                extern crate std;
-                std::thread::yield_now();
-            }
-            
-            #[cfg(not(feature = "std-shim"))]
-            {
-                // In a real kernel implementation, we'd yield to scheduler
-                // For now, just continue the loop
-                core::hint::spin_loop();
-            }
+
+            // Yield to scheduler to let other threads (including the one we're
+            // waiting for) run
+            crate::yield_now();
         }
-        
+
         // Check if we have a result
         if let Some(join_result) = self.inner.join_result.try_lock() {
             if join_result.is_some() {

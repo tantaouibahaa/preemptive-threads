@@ -6,9 +6,6 @@
 pub mod tick;
 pub mod timer;
 
-#[cfg(feature = "x86_64")]
-pub mod x86_64_timer;
-
 pub use tick::{TickCounter, TimeSlice};
 pub use timer::{Timer, TimerConfig, TimerError, PreemptGuard, IrqGuard};
 
@@ -42,16 +39,25 @@ impl Instant {
     
     /// Get the current instant.
     ///
-    /// This reads the current time from the architecture-specific timer.
+    /// This reads the current time from the ARM Generic Timer.
     pub fn now() -> Self {
-        #[cfg(feature = "x86_64")]
+        #[cfg(target_arch = "aarch64")]
         {
-            x86_64_timer::read_tsc()
+            // Read ARM Generic Timer counter
+            let cnt: u64;
+            unsafe {
+                core::arch::asm!(
+                    "mrs {}, cntpct_el0",
+                    out(reg) cnt,
+                    options(nostack, nomem, preserves_flags)
+                );
+            }
+            Self(cnt)
         }
-        
-        #[cfg(not(feature = "x86_64"))]
+
+        #[cfg(not(target_arch = "aarch64"))]
         {
-            // Fallback for other architectures
+            // Fallback for testing on non-ARM hosts
             Self(0)
         }
     }

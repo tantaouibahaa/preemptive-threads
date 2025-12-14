@@ -21,7 +21,7 @@ pub trait Arch {
     ///
     /// This type must contain all CPU registers and state needed to fully
     /// restore a thread's execution context.
-    type SavedContext: Send + Sync;
+    type SavedContext: Send + Sync + Default;
 
     /// Switch from one thread context to another.
     ///
@@ -109,37 +109,32 @@ impl Arch for NoOpArch {
     }
 }
 
-// Include architecture-specific implementations
-#[cfg(feature = "x86_64")]
-pub mod x86_64;
-
-#[cfg(feature = "arm64")]
+// Raspberry Pi Zero 2 W - ARM64 only
+#[cfg(target_arch = "aarch64")]
 pub mod aarch64;
-
-#[cfg(feature = "riscv64")]
-pub mod riscv;
+#[cfg(not(target_arch = "aarch64"))]
+#[path = "aarch64_stub.rs"]
+pub mod aarch64;
 
 pub mod barriers;
 pub mod detection;
 
-// Re-export the default architecture for the current target
-#[cfg(all(target_arch = "x86_64", feature = "x86_64"))]
-pub use x86_64::X86_64Arch as DefaultArch;
+// RPi Zero 2 W specific hardware support
+#[cfg(target_arch = "aarch64")]
+pub mod aarch64_gic;
+#[cfg(target_arch = "aarch64")]
+pub mod aarch64_vectors;
+#[cfg(target_arch = "aarch64")]
+pub mod aarch64_boot;
 
-#[cfg(all(target_arch = "aarch64", feature = "arm64"))]
+// Always use AArch64 - single target (Raspberry Pi Zero 2 W)
+#[cfg(target_arch = "aarch64")]
 pub use aarch64::Aarch64Arch as DefaultArch;
 
-#[cfg(all(any(target_arch = "riscv64"), feature = "riscv64"))]
-pub use riscv::RiscvArch as DefaultArch;
-
-#[cfg(all(feature = "std-shim", not(any(feature = "x86_64", feature = "arm64", feature = "riscv64"))))]
+// For testing/std-shim on non-aarch64 hosts
+#[cfg(all(not(target_arch = "aarch64"), feature = "std-shim"))]
 pub use NoOpArch as DefaultArch;
 
-// Fallback for when no specific architecture is enabled
-#[cfg(not(any(
-    all(target_arch = "x86_64", feature = "x86_64"),
-    all(target_arch = "aarch64", feature = "arm64"), 
-    all(any(target_arch = "riscv64"), feature = "riscv64"),
-    all(feature = "std-shim", not(any(feature = "x86_64", feature = "arm64", feature = "riscv64")))
-)))]
-pub use NoOpArch as DefaultArch;
+// Compile error for unsupported configurations
+#[cfg(all(not(target_arch = "aarch64"), not(feature = "std-shim")))]
+compile_error!("This library only supports Raspberry Pi Zero 2 W (aarch64). Use --target aarch64-unknown-none or enable std-shim feature for testing.");

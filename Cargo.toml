@@ -1,80 +1,37 @@
 [package]
 name = "preemptive-threads"
-version = "0.5.0-beta"
+version = "0.6.0-alpha"
 edition = "2021"
 rust-version = "1.70"
 authors = ["Nathan Ryver <tantaouisoftware@gmail.com>"]
-description = "A no_std preemptive multithreading library built from scratch for OS kernels and embedded systems"
+description = "Bare-metal preemptive multithreading for Raspberry Pi Zero 2 W (ARM Cortex-A53)"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/NathanVRyver/preemptive-threads"
-keywords = ["threading", "no-std", "kernel", "embedded", "scheduler"]
+keywords = ["threading", "no-std", "raspberry-pi", "bare-metal", "arm64"]
 categories = ["no-std", "os", "embedded", "concurrency"]
 readme = "README.md"
 documentation = "https://docs.rs/preemptive-threads"
 
 [dependencies]
 portable-atomic = { version = "1.0", default-features = false }
-spin = { version = "0.9", default-features = false, features = ["mutex", "spin_mutex"] }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-libc = { version = "0.2", default-features = false }
+spin = { version = "0.9", default-features = false, features = ["mutex", "spin_mutex", "lazy", "once"] }
 
 [features]
-default = []
-std = []
-std-shim = []
-x86_64 = []
-arm64 = []
-riscv64 = []
-riscv-float = []
-riscv-vector = []
+default = ["full-fpu"]
+# Enable NEON/FPU context save/restore (recommended for most use cases)
 full-fpu = []
-mmu = []
-work-stealing = []
-hardened = []
+# Enable std compatibility layer for host testing
+std-shim = []
 
 [profile.dev]
 panic = "abort"
 
 [profile.release]
 panic = "abort"
+lto = true
+opt-level = "z"  # Optimize for size
 
-[[bin]]
-name = "example"
-path = "src/bin/example.rs"
-required-features = ["std"]
-
-[[bin]]
-name = "test_preemption"
-path = "src/bin/test_preemption.rs"
-required-features = ["std"]
-
-[[bin]]
-name = "stress_test" 
-path = "src/bin/stress_test.rs"
-required-features = ["std"]
-
-[[bin]]
-name = "priority_test"
-path = "src/bin/priority_test.rs"
-required-features = ["std"]
-
-[[bin]]
-name = "stack_overflow_test"
-path = "src/bin/stack_overflow_test.rs"
-required-features = ["std"]
-
-[[bin]]
-name = "benchmark"
-path = "src/bin/benchmark.rs"
-required-features = ["std"]
-
-[[bin]]
-name = "interactive_demo"
-path = "src/bin/interactive_demo.rs"
-required-features = ["std"]
-
-[[bin]]
-name = "performance_benchmark"
-path = "src/bin/performance_benchmark.rs"
-required-features = ["std"]
+# Bare-metal example kernel
+[[example]]
+name = "rpi_kernel"
+path = "examples/rpi_kernel.rs"

@@ -44,19 +44,20 @@ impl<T> ArcLite<T> {
         #[cfg(feature = "std-shim")]
         {
             extern crate std;
+            use core::alloc::GlobalAlloc;
             use std::alloc::System;
-            let ptr = unsafe { System.alloc(layout) as *mut ArcLiteInner<T> };
+            let ptr = unsafe { GlobalAlloc::alloc(&System, layout) as *mut ArcLiteInner<T> };
             if ptr.is_null() {
                 panic!("Failed to allocate memory for ArcLite");
             }
-            
+
             unsafe {
                 ptr::write(ptr, ArcLiteInner {
                     count: AtomicUsize::new(1),
                     data,
                 });
             }
-            
+
             Self {
                 ptr: unsafe { NonNull::new_unchecked(ptr) },
             }
@@ -137,15 +138,16 @@ impl<T> ArcLite<T> {
         #[cfg(feature = "std-shim")]
         {
             extern crate std;
+            use core::alloc::GlobalAlloc;
             use std::alloc::System;
             let layout = Layout::new::<ArcLiteInner<T>>();
-            
+
             // Drop the data
             unsafe {
                 ptr::drop_in_place(&mut self.ptr.as_ptr().as_mut().unwrap().data);
-            
+
                 // Deallocate the memory
-                System.dealloc(self.ptr.as_ptr() as *mut u8, layout);
+                GlobalAlloc::dealloc(&System, self.ptr.as_ptr() as *mut u8, layout);
             }
         }
         
