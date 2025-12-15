@@ -29,10 +29,10 @@ run: build
 build-virt:
 	RUSTFLAGS="-C link-arg=-Tqemu_virt.ld" cargo +nightly build --release --example rpi_kernel --target $(TARGET) --features qemu-virt
 
-# QEMU virt - full preemption works (GIC emulated at 0x08000000)
+# QEMU virt - full preemption works (GICv2 emulated at 0x08000000)
 run-virt: build-virt
 	qemu-system-aarch64 \
-		-M virt \
+		-M virt,gic-version=2 \
 		-cpu cortex-a53 \
 		-kernel $(KERNEL) \
 		-serial stdio \
@@ -52,7 +52,7 @@ debug: build
 
 debug-virt: build-virt
 	qemu-system-aarch64 \
-		-M virt \
+		-M virt,gic-version=2 \
 		-cpu cortex-a53 \
 		-kernel $(KERNEL) \
 		-serial stdio \
@@ -98,8 +98,8 @@ test-qemu: build
 # Quick QEMU test (5 seconds) - virt with preemption
 test-virt: build-virt
 	@rm -f /tmp/qemu_output.txt /tmp/qemu_debug.txt
-	@echo "Running virt for 5 seconds..."
-	@qemu-system-aarch64 -M virt -cpu cortex-a53 -kernel $(KERNEL) \
+	@echo "Running virt (GICv2) for 5 seconds..."
+	@qemu-system-aarch64 -M virt,gic-version=2 -cpu cortex-a53 -kernel $(KERNEL) \
 		-serial file:/tmp/qemu_output.txt -display none \
 		-d cpu_reset,int 2>/tmp/qemu_debug.txt & \
 	QEMU_PID=$$!; sleep 5; kill $$QEMU_PID 2>/dev/null; wait $$QEMU_PID 2>/dev/null; \

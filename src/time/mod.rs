@@ -39,20 +39,34 @@ impl Instant {
     
     /// Get the current instant.
     ///
-    /// This reads the current time from the ARM Generic Timer.
+    /// This reads the current time from the ARM Generic Timer and converts
+    /// to nanoseconds for consistent time calculations.
     pub fn now() -> Self {
         #[cfg(target_arch = "aarch64")]
         {
-            // Read ARM Generic Timer counter
+            // Read ARM Generic Timer counter and frequency
             let cnt: u64;
+            let freq: u64;
             unsafe {
                 core::arch::asm!(
                     "mrs {}, cntpct_el0",
                     out(reg) cnt,
                     options(nostack, nomem, preserves_flags)
                 );
+                core::arch::asm!(
+                    "mrs {}, cntfrq_el0",
+                    out(reg) freq,
+                    options(nostack, nomem, preserves_flags)
+                );
             }
-            Self(cnt)
+            // Convert ticks to nanoseconds: ns = ticks * 1_000_000_000 / freq
+            // Use u128 to avoid overflow
+            let nanos = if freq > 0 {
+                ((cnt as u128 * 1_000_000_000) / freq as u128) as u64
+            } else {
+                0
+            };
+            Self(nanos)
         }
 
         #[cfg(not(target_arch = "aarch64"))]

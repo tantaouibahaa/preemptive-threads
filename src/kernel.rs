@@ -304,6 +304,14 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
             *current_guard = Some(running);
             drop(current_guard);
 
+            // Set up IRQ context pointers so interrupts save/restore to this thread
+            #[cfg(target_arch = "aarch64")]
+            unsafe {
+                crate::arch::aarch64::set_current_irq_context(
+                    next_ctx as *mut crate::arch::aarch64::Aarch64Context
+                );
+            }
+
             // Jump to the first thread (no previous context to save)
             if !next_ctx.is_null() {
                 unsafe {
@@ -318,13 +326,14 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
         }
     }
 
-    /// Handle a timer interrupt for preemptive scheduling.
+    /// Handle a timer interrupt for preemptive scheduling (legacy - uses context_switch).
     ///
     /// This should be called from the architecture-specific timer interrupt handler.
     ///
     /// # Safety
     ///
     /// Must be called from an interrupt context with interrupts disabled.
+    #[allow(dead_code)]
     pub unsafe fn handle_timer_interrupt(&self) {
         if !self.is_initialized() {
             return;
@@ -337,8 +346,10 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
         };
 
         if let Some(ref current) = *current_guard {
-            // Check if current thread should be preempted
-            if current.should_preempt() {
+            // Always preempt on timer interrupt for now (force round-robin)
+            // TODO: Restore time slice checking once debugging is complete
+            let should_switch = true; // current.should_preempt();
+            if should_switch {
                 // Take current thread out
                 if let Some(current) = current_guard.take() {
                     let prev_ctx = current.0.context_ptr();
@@ -385,6 +396,85 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
                     }
                 }
             }
+        }
+    }
+
+    /// Handle preemption from an IRQ context.
+    ///
+    /// This method is called from the timer interrupt handler. Instead of doing
+    /// a context_switch (which doesn't work from interrupt context), it updates
+    /// the IRQ_LOAD_CTX pointer so that the IRQ handler's return sequence
+    /// restores the new thread's context.
+    ///
+    /// # Safety
+    ///
+    /// Must be called from an IRQ handler with interrupts disabled.
+    /// The IRQ handler must have saved the current context to IRQ_SAVE_CTX.
+    #[cfg(target_arch = "aarch64")]
+    pub fn handle_irq_preemption(&self) {
+        if !self.is_initialized() {
+            return;
+        }
+
+        // Try to get the lock - if we can't, another CPU is scheduling
+        let mut current_guard = match self.current_thread.try_lock() {
+            Some(guard) => guard,
+            None => return, // Lock contention, skip this tick
+        };
+
+        // Debug output
+        #[cfg(target_arch = "aarch64")]
+        crate::pl011_println!("[IRQ] handle_irq_preemption called");
+
+        if let Some(ref _current) = *current_guard {
+            // Always preempt on timer interrupt for now (force round-robin)
+            let should_switch = true;
+
+            if should_switch {
+                // Take current thread out
+                if let Some(current) = current_guard.take() {
+                    // Current thread's context was saved by IRQ handler to IRQ_SAVE_CTX
+                    // which points to this thread's context structure
+
+                    // Convert to ready and enqueue
+                    let ready = current.stop_running();
+                    self.scheduler.enqueue(ready);
+
+                    // Pick next thread
+                    if let Some(next) = self.scheduler.pick_next(0) {
+                        let next_ctx = next.0.context_ptr();
+
+                        #[cfg(target_arch = "aarch64")]
+                        crate::pl011_println!("[IRQ] Switching to thread {}", next.id().get());
+
+                        let running = next.start_running();
+                        *current_guard = Some(running);
+                        drop(current_guard);
+
+                        // Update IRQ context pointers for the new thread
+                        // - IRQ_LOAD_CTX: IRQ handler will load from here when returning
+                        // - IRQ_SAVE_CTX: Next interrupt will save here
+                        if !next_ctx.is_null() {
+                            crate::arch::aarch64::set_irq_load_context(
+                                next_ctx as *mut crate::arch::aarch64::Aarch64Context
+                            );
+                            // Also update SAVE for next interrupt
+                            unsafe {
+                                crate::arch::aarch64::set_current_irq_context(
+                                    next_ctx as *mut crate::arch::aarch64::Aarch64Context
+                                );
+                            }
+                        }
+                    } else {
+                        // No other thread to run, stay with current (re-enqueue it)
+                        drop(current_guard);
+                    }
+                }
+            }
+        } else {
+            #[cfg(target_arch = "aarch64")]
+            crate::pl011_println!("[IRQ] No current thread!");
+            drop(current_guard);
         }
     }
 

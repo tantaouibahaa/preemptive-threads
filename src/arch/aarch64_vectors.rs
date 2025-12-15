@@ -185,62 +185,148 @@ unsafe extern "C" fn sync_el1h() {
 }
 
 /// IRQ handler - This is the main interrupt entry point for timer preemption.
+///
+/// This handler saves the interrupted thread's context to IRQ_SAVE_CTX,
+/// calls the high-level handler (which may update IRQ_LOAD_CTX),
+/// then restores context from IRQ_LOAD_CTX and returns.
+///
+/// Uses a dedicated IRQ stack to avoid corrupting the interrupted thread's stack.
+///
+/// Context structure layout (Aarch64Context):
+/// - x[0-30]: offsets 0-240 (31 * 8 bytes)
+/// - sp: offset 248
+/// - pc: offset 256
+/// - pstate: offset 264
 #[cfg(target_arch = "aarch64")]
 #[no_mangle]
 #[unsafe(naked)]
 unsafe extern "C" fn irq_el1h() {
     naked_asm!(
-        // Save all registers
-        "sub sp, sp, #272",
-        "stp x0, x1, [sp, #0]",
-        "stp x2, x3, [sp, #16]",
-        "stp x4, x5, [sp, #32]",
-        "stp x6, x7, [sp, #48]",
-        "stp x8, x9, [sp, #64]",
-        "stp x10, x11, [sp, #80]",
-        "stp x12, x13, [sp, #96]",
-        "stp x14, x15, [sp, #112]",
-        "stp x16, x17, [sp, #128]",
-        "stp x18, x19, [sp, #144]",
-        "stp x20, x21, [sp, #160]",
-        "stp x22, x23, [sp, #176]",
-        "stp x24, x25, [sp, #192]",
-        "stp x26, x27, [sp, #208]",
-        "stp x28, x29, [sp, #224]",
-        "str x30, [sp, #240]",
+        // === PHASE 1: Save critical registers to thread stack, then switch to IRQ stack ===
+        // Strategy: Use the thread's stack briefly to save x0-x3, x29, x30, ELR, SPSR
+        // Then switch to IRQ stack and copy to the save context.
 
-        // Save exception registers
+        // Save x0-x3 to thread stack FIRST, before clobbering
+        "sub sp, sp, #64",
+        "stp x0, x1, [sp, #0]",    // Save original x0, x1
+        "stp x2, x3, [sp, #16]",   // Save original x2, x3
+        "stp x29, x30, [sp, #32]", // Save x29, x30 too
         "mrs x0, elr_el1",
         "mrs x1, spsr_el1",
-        "stp x0, x1, [sp, #248]",
+        "stp x0, x1, [sp, #48]",   // Save ELR, SPSR
 
-        // Call IRQ handler
+        // x0 = original SP (before our sub)
+        "add x0, sp, #64",
+
+        // Switch to IRQ stack
+        "adrp x29, {irq_stack}",
+        "add x29, x29, :lo12:{irq_stack}",
+        "add x29, x29, #4096",
+        "mov x2, sp",              // x2 = thread stack (with our saves)
+        "mov sp, x29",             // Switch to IRQ stack
+
+        // Load IRQ_SAVE_CTX into x29
+        "adrp x29, {irq_save_ctx}",
+        "add x29, x29, :lo12:{irq_save_ctx}",
+        "ldr x29, [x29]",
+
+        // If null, skip to handler
+        "cbz x29, 2f",
+
+        // Save all registers to context. x0 = original SP, x2 = thread stack ptr
+        // Load original x0, x1 from thread stack and save to context
+        "ldp x3, x1, [x2, #0]",    // x3 = original x0, x1 = original x1 (wait, we swapped)
+        // Actually [x2, #0] has x0, [x2, #8] has x1
+        "ldr x3, [x2, #0]",        // x3 = original x0
+        "str x3, [x29, #0]",       // Save to context
+        "ldr x3, [x2, #8]",        // x3 = original x1
+        "str x3, [x29, #8]",
+        "ldr x3, [x2, #16]",       // x3 = original x2
+        "str x3, [x29, #16]",
+        "ldr x3, [x2, #24]",       // x3 = original x3
+        "str x3, [x29, #24]",
+
+        // x4-x28 haven't been modified, save directly
+        "stp x4, x5, [x29, #32]",
+        "stp x6, x7, [x29, #48]",
+        "stp x8, x9, [x29, #64]",
+        "stp x10, x11, [x29, #80]",
+        "stp x12, x13, [x29, #96]",
+        "stp x14, x15, [x29, #112]",
+        "stp x16, x17, [x29, #128]",
+        "stp x18, x19, [x29, #144]",
+        "stp x20, x21, [x29, #160]",
+        "stp x22, x23, [x29, #176]",
+        "stp x24, x25, [x29, #192]",
+        "stp x26, x27, [x29, #208]",
+        "str x28, [x29, #224]",
+
+        // Load original x29, x30 from thread stack
+        "ldp x3, x1, [x2, #32]",   // x3 = original x29, x1 = original x30
+        "str x3, [x29, #232]",     // Save x29
+        "str x1, [x29, #240]",     // Save x30
+
+        // Save original SP (in x0)
+        "str x0, [x29, #248]",
+
+        // Save ELR, SPSR from thread stack
+        "ldp x3, x1, [x2, #48]",
+        "str x3, [x29, #256]",     // PC = ELR
+        "str x1, [x29, #264]",     // pstate = SPSR
+
+        // === PHASE 2: Call high-level IRQ handler ===
+        "2:",
         "bl irq_handler",
 
-        // Restore registers and return
-        "ldp x0, x1, [sp, #248]",
-        "msr elr_el1, x0",
-        "msr spsr_el1, x1",
+        // === PHASE 3: Load context from IRQ_LOAD_CTX ===
+        "adrp x29, {irq_load_ctx}",
+        "add x29, x29, :lo12:{irq_load_ctx}",
+        "ldr x29, [x29]",
 
-        "ldp x0, x1, [sp, #0]",
-        "ldp x2, x3, [sp, #16]",
-        "ldp x4, x5, [sp, #32]",
-        "ldp x6, x7, [sp, #48]",
-        "ldp x8, x9, [sp, #64]",
-        "ldp x10, x11, [sp, #80]",
-        "ldp x12, x13, [sp, #96]",
-        "ldp x14, x15, [sp, #112]",
-        "ldp x16, x17, [sp, #128]",
-        "ldp x18, x19, [sp, #144]",
-        "ldp x20, x21, [sp, #160]",
-        "ldp x22, x23, [sp, #176]",
-        "ldp x24, x25, [sp, #192]",
-        "ldp x26, x27, [sp, #208]",
-        "ldp x28, x29, [sp, #224]",
-        "ldr x30, [sp, #240]",
-        "add sp, sp, #272",
+        // If null, panic (we should always have a context to return to)
+        "cbz x29, 3f",
+
+        // Load SPSR and ELR first
+        "ldr x0, [x29, #264]",
+        "msr spsr_el1, x0",
+        "ldr x0, [x29, #256]",
+        "msr elr_el1, x0",
+
+        // Load SP - switch to thread's stack
+        "ldr x0, [x29, #248]",
+        "mov sp, x0",
+
+        // Load all GP registers
+        // x0-x27 first
+        "ldp x0, x1, [x29, #0]",
+        "ldp x2, x3, [x29, #16]",
+        "ldp x4, x5, [x29, #32]",
+        "ldp x6, x7, [x29, #48]",
+        "ldp x8, x9, [x29, #64]",
+        "ldp x10, x11, [x29, #80]",
+        "ldp x12, x13, [x29, #96]",
+        "ldp x14, x15, [x29, #112]",
+        "ldp x16, x17, [x29, #128]",
+        "ldp x18, x19, [x29, #144]",
+        "ldp x20, x21, [x29, #160]",
+        "ldp x22, x23, [x29, #176]",
+        "ldp x24, x25, [x29, #192]",
+        "ldp x26, x27, [x29, #208]",
+        "ldr x28, [x29, #224]",
+        "ldr x30, [x29, #240]",
+
+        // Finally load x29 (must be last since it's our base pointer)
+        "ldr x29, [x29, #232]",
 
         "eret",
+
+        // Null context - shouldn't happen, infinite loop
+        "3:",
+        "b .",
+
+        irq_save_ctx = sym super::aarch64::IRQ_SAVE_CTX,
+        irq_load_ctx = sym super::aarch64::IRQ_LOAD_CTX,
+        irq_stack = sym super::aarch64::IRQ_STACK,
     );
 }
 
@@ -378,20 +464,9 @@ extern "C" fn irq_handler() {
 fn timer_interrupt_handler() {
     #[cfg(target_arch = "aarch64")]
     {
-        // Disable timer interrupt temporarily
+        // Call the aarch64 timer handler which invokes the kernel scheduler
         unsafe {
-            asm!(
-                "mrs {tmp}, cntp_ctl_el0",
-                "orr {tmp}, {tmp}, #2",      // Set IMASK bit
-                "msr cntp_ctl_el0, {tmp}",
-                tmp = out(reg) _,
-                options(nomem, nostack)
-            );
-        }
-
-        // Re-arm the timer for next tick (1ms = 1000us)
-        unsafe {
-            super::aarch64::setup_preemption_timer(1000).ok();
+            super::aarch64::timer_interrupt_handler();
         }
     }
 }
