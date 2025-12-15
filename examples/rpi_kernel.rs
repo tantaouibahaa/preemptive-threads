@@ -1,41 +1,35 @@
-//! Minimal bare-metal kernel example for Raspberry Pi Zero 2 W.
+//! Preemptive Multithreading Kernel for Raspberry Pi Zero 2 W
 //!
-//! This example demonstrates basic preemptive multithreading on bare metal
-//! with UART output so you can see what's happening!
+//! This example demonstrates true preemptive multithreading on bare metal ARM64.
+//! Three threads run concurrently, switched automatically by timer interrupts.
 //!
-//! # Building
+//! # Quick Test (QEMU)
 //!
 //! ```bash
-//! cargo build --release --example rpi_kernel --target aarch64-unknown-none
+//! make test-virt
 //! ```
 //!
-//! # Deploying
+//! # Building for Real Hardware
 //!
-//! 1. Convert ELF to binary:
-//!    ```bash
-//!    rust-objcopy -O binary target/aarch64-unknown-none/release/examples/rpi_kernel kernel8.img
-//!    ```
+//! ```bash
+//! cargo +nightly build --release --example rpi_kernel --target aarch64-unknown-none
+//! rust-objcopy -O binary target/aarch64-unknown-none/release/examples/rpi_kernel kernel8.img
+//! ```
 //!
-//! 2. Copy kernel8.img to SD card boot partition
+//! # Deploying to Raspberry Pi Zero 2 W
 //!
-//! 3. Create config.txt on SD card:
+//! 1. Format SD card as FAT32
+//! 2. Copy to SD card:
+//!    - `kernel8.img` (your kernel)
+//!    - `bootcode.bin`, `start.elf`, `fixup.dat` (from RPi firmware)
+//! 3. Create `config.txt`:
 //!    ```
 //!    arm_64bit=1
 //!    kernel=kernel8.img
 //!    ```
-//!
-//! 4. Connect USB-to-serial adapter:
-//!    - GPIO 14 (pin 8) = TX -> connect to adapter RX
-//!    - GPIO 15 (pin 10) = RX -> connect to adapter TX
-//!    - GND (pin 6) -> connect to adapter GND
-//!
-//! 5. On your computer, open serial terminal:
-//!    ```bash
-//!    screen /dev/tty.usbserial* 115200   # macOS
-//!    screen /dev/ttyUSB0 115200          # Linux
-//!    ```
-//!
-//! 6. Boot the Raspberry Pi and watch the output!
+//! 4. Wire serial: GPIO14→RX, GPIO15→TX, GND→GND
+//! 5. Connect: `screen /dev/tty.usbserial* 115200`
+//! 6. Power on and watch the threads run!
 
 #![no_std]
 #![no_main]
