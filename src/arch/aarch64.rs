@@ -30,7 +30,11 @@ pub static mut IRQ_STACK: IrqStack = IrqStack { data: [0; 4096] };
 /// Get the top of the IRQ stack (stack grows down)
 #[inline]
 pub fn irq_stack_top() -> *mut u8 {
-    unsafe { IRQ_STACK.data.as_mut_ptr().add(4096) }
+    // Use raw pointer to avoid mutable reference to static
+    unsafe {
+        let ptr = core::ptr::addr_of_mut!(IRQ_STACK);
+        (*ptr).data.as_mut_ptr().add(4096)
+    }
 }
 
 /// AArch64 architecture implementation.

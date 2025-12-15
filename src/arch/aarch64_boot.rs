@@ -50,18 +50,18 @@ pub unsafe extern "C" fn _start() -> ! {
             // Park secondary CPUs (only CPU 0 runs the kernel)
             "mrs x0, mpidr_el1",
             "and x0, x0, #0xFF",
-            "cbnz x0, .Lpark",
+            "cbnz x0, 99f",             // -> park
 
             // Check current exception level and drop to EL1 if needed
             "mrs x0, CurrentEL",
             "lsr x0, x0, #2",           // Extract EL field (bits 3:2)
             "cmp x0, #3",
-            "b.eq .Lfrom_el3",
+            "b.eq 3f",                  // -> from_el3
             "cmp x0, #2",
-            "b.eq .Lfrom_el2",
-            "b .Lat_el1",               // Already at EL1
+            "b.eq 2f",                  // -> from_el2
+            "b 1f",                     // -> at_el1 (already at EL1)
 
-        ".Lfrom_el3:",
+        "3:",  // from_el3
             // At EL3: Drop to EL2 first, then EL2 will drop to EL1
             // This two-stage approach works better with QEMU
 
@@ -79,11 +79,11 @@ pub unsafe extern "C" fn _start() -> ! {
             "msr spsr_el3, x0",
 
             // Set return address to EL2 setup
-            "adr x0, .Lfrom_el2",
+            "adr x0, 2f",               // -> from_el2
             "msr elr_el3, x0",
             "eret",
 
-        ".Lfrom_el2:",
+        "2:",  // from_el2
             // At EL2: Configure and drop to EL1
             // HCR_EL2: RW=1 (EL1 is AArch64)
             "mov x0, #(1 << 31)",       // RW bit
@@ -95,11 +95,11 @@ pub unsafe extern "C" fn _start() -> ! {
             "msr spsr_el2, x0",
 
             // Set return address to EL1 entry
-            "adr x0, .Lat_el1",
+            "adr x0, 1f",               // -> at_el1
             "msr elr_el2, x0",
             "eret",
 
-        ".Lat_el1:",
+        "1:",  // at_el1
             // Now at EL1 - set up stack
             "adrp x0, __stack_top",
             "add x0, x0, :lo12:__stack_top",
@@ -110,12 +110,12 @@ pub unsafe extern "C" fn _start() -> ! {
             "add x0, x0, :lo12:__bss_start",
             "adrp x1, __bss_end",
             "add x1, x1, :lo12:__bss_end",
-        ".Lclear_bss:",
+        "4:",  // clear_bss
             "cmp x0, x1",
-            "b.ge .Lbss_done",
+            "b.ge 5f",                  // -> bss_done
             "str xzr, [x0], #8",
-            "b .Lclear_bss",
-        ".Lbss_done:",
+            "b 4b",                     // -> clear_bss
+        "5:",  // bss_done
 
             // Enable FP/SIMD (don't trap to EL1)
             "mrs x0, cpacr_el1",
@@ -126,10 +126,10 @@ pub unsafe extern "C" fn _start() -> ! {
             // Jump to Rust boot code
             "b {boot_rust}",
 
-        ".Lpark:",
+        "99:",  // park
             // Secondary CPUs wait forever
             "wfe",
-            "b .Lpark",
+            "b 99b",
 
             boot_rust = sym boot_rust,
     );

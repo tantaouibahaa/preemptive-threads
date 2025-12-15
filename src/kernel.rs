@@ -115,16 +115,9 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
     where
         F: FnOnce() + Send + 'static,
     {
-        // Debug: entering spawn
-        #[cfg(target_arch = "aarch64")]
-        crate::pl011_println!("[spawn] entering spawn()");
-
         if !self.is_initialized() {
             return Err(SpawnError::NotInitialized);
         }
-
-        #[cfg(target_arch = "aarch64")]
-        crate::pl011_println!("[spawn] allocating stack...");
 
         // Allocate stack
         let stack = self
@@ -132,25 +125,27 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
             .allocate(StackSizeClass::Medium)
             .ok_or(SpawnError::OutOfMemory)?;
 
-        #[cfg(target_arch = "aarch64")]
-        crate::pl011_println!("[spawn] stack allocated, getting thread ID...");
-
         // Generate unique thread ID
         let thread_id = self.next_thread_id();
-
-        #[cfg(target_arch = "aarch64")]
-        crate::pl011_println!("[spawn] boxing closure...");
 
         // Box the closure to move it to the heap
         let closure_box = Box::new(entry_point);
         let closure_ptr = Box::into_raw(closure_box);
 
-        #[cfg(target_arch = "aarch64")]
-        crate::pl011_println!("[spawn] closure boxed");
-
         // Create trampoline that will call the closure
         // The trampoline is a fn() that we'll set up in the context
         fn thread_trampoline<F: FnOnce() + Send + 'static>(closure_ptr: *mut F) {
+            // Enable interrupts - this is the first code that runs in a new thread
+            // context_switch uses ret, not eret, so PSTATE isn't restored.
+            // We need to explicitly enable interrupts here.
+            #[cfg(target_arch = "aarch64")]
+            unsafe {
+                core::arch::asm!(
+                    "msr daifclr, #2",  // Clear IRQ mask
+                    options(nomem, nostack)
+                );
+            }
+
             // Reconstruct the boxed closure and call it
             let closure = unsafe { Box::from_raw(closure_ptr) };
             closure();
@@ -169,23 +164,14 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
             }
         }
 
-        #[cfg(target_arch = "aarch64")]
-        crate::pl011_println!("[spawn] getting stack bottom...");
-
         // Get the stack bottom (top of stack memory, since stack grows down)
         let stack_bottom = stack.stack_bottom();
-
-        #[cfg(target_arch = "aarch64")]
-        crate::pl011_println!("[spawn] creating Thread::new...");
 
         // Create thread with the trampoline as entry point
         // We'll pass closure_ptr via the thread's context (x0 register on ARM64)
         let entry_fn: fn() = || {};  // Placeholder - actual entry is set up in context
 
         let (thread, join_handle) = Thread::new(thread_id, stack, entry_fn, priority);
-
-        #[cfg(target_arch = "aarch64")]
-        crate::pl011_println!("[spawn] setting up initial context...");
 
         // Set up the initial context to start at the trampoline with closure_ptr as arg
         thread.setup_initial_context(
@@ -194,15 +180,9 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
             closure_ptr as usize,
         );
 
-        #[cfg(target_arch = "aarch64")]
-        crate::pl011_println!("[spawn] enqueueing in scheduler...");
-
         // Convert to ReadyRef and enqueue in scheduler
         let ready_ref = ReadyRef(thread);
         self.scheduler.enqueue(ready_ref);
-
-        #[cfg(target_arch = "aarch64")]
-        crate::pl011_println!("[spawn] done!");
 
         Ok(join_handle)
     }
@@ -308,10 +288,6 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
         if let Some(next) = self.scheduler.pick_next(0) {
             let next_ctx = next.0.context_ptr();
 
-            #[cfg(target_arch = "aarch64")]
-            crate::pl011_println!("[start_first_thread] Got thread {}, ctx={:#x}",
-                next.id().get(), next_ctx as usize);
-
             let running = next.start_running();
             *current_guard = Some(running);
             drop(current_guard);
@@ -324,14 +300,9 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
                 );
             }
 
-            #[cfg(target_arch = "aarch64")]
-            crate::pl011_println!("[start_first_thread] IRQ context set, enabling interrupts...");
-
-            // NOW enable interrupts - current_thread is set and IRQ context is ready
-            A::enable_interrupts();
-
-            #[cfg(target_arch = "aarch64")]
-            crate::pl011_println!("[start_first_thread] About to context_switch...");
+            // Note: We do NOT enable interrupts here. The thread trampoline will
+            // enable them after we context_switch into the first thread. This
+            // prevents an IRQ from firing before the context switch completes.
 
             // Jump to the first thread (no previous context to save)
             if !next_ctx.is_null() {
@@ -345,8 +316,6 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
                 }
             }
         } else {
-            #[cfg(target_arch = "aarch64")]
-            crate::pl011_println!("[start_first_thread] No threads to run!");
             A::enable_interrupts();
         }
     }
@@ -370,7 +339,7 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
             None => return, // Lock contention, skip this tick
         };
 
-        if let Some(ref current) = *current_guard {
+        if let Some(ref _current) = *current_guard {
             // Always preempt on timer interrupt for now (force round-robin)
             // TODO: Restore time slice checking once debugging is complete
             let should_switch = true; // current.should_preempt();
@@ -447,10 +416,6 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
             None => return, // Lock contention, skip this tick
         };
 
-        // Debug output
-        #[cfg(target_arch = "aarch64")]
-        crate::pl011_println!("[IRQ] handle_irq_preemption called");
-
         if let Some(ref _current) = *current_guard {
             // Always preempt on timer interrupt for now (force round-robin)
             let should_switch = true;
@@ -461,6 +426,8 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
                     // Current thread's context was saved by IRQ handler to IRQ_SAVE_CTX
                     // which points to this thread's context structure
 
+                    let old_id = current.id().get();
+
                     // Convert to ready and enqueue
                     let ready = current.stop_running();
                     self.scheduler.enqueue(ready);
@@ -468,9 +435,8 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
                     // Pick next thread
                     if let Some(next) = self.scheduler.pick_next(0) {
                         let next_ctx = next.0.context_ptr();
-
-                        #[cfg(target_arch = "aarch64")]
-                        crate::pl011_println!("[IRQ] Switching to thread {}", next.id().get());
+                        let _old_id = old_id; // Suppress unused warning
+                        let _new_id = next.id().get();
 
                         let running = next.start_running();
                         *current_guard = Some(running);
@@ -497,8 +463,7 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
                 }
             }
         } else {
-            #[cfg(target_arch = "aarch64")]
-            crate::pl011_println!("[IRQ] No current thread!");
+            // No current thread (shouldn't happen if start_first_thread was called)
             drop(current_guard);
         }
     }

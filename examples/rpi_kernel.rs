@@ -43,7 +43,7 @@
 extern crate alloc;
 
 use preemptive_threads::{
-    arch::{Arch, DefaultArch},
+    arch::DefaultArch,
     sched::RoundRobinScheduler,
     pl011_println,
     Kernel,
@@ -139,42 +139,40 @@ pub fn kernel_main() -> ! {
     }
     pl011_println!("[BOOT] Kernel registered globally");
 
-    // Spawn Thread 1 - with debug output
-    pl011_println!("[BOOT] About to spawn Thread 1...");
-    pl011_println!("[DEBUG] Calling KERNEL.spawn()...");
-    let spawn_result = KERNEL
+    // Spawn Thread 1
+    pl011_println!("[BOOT] Spawning threads...");
+    KERNEL
         .spawn(
             || {
+                pl011_println!("[Thread 1] Started!");
                 let mut counter = 0u64;
                 loop {
                     counter = counter.wrapping_add(1);
-                    if counter % 500_000 == 0 {
+                    if counter % 5_000_000 == 0 {
                         pl011_println!("[Thread 1] counter = {}", counter);
                     }
                     // Small busy loop to simulate work
-                    for _ in 0..1000 {
+                    for _ in 0..100 {
                         core::hint::spin_loop();
                     }
                 }
             },
             128, // Normal priority
-        );
-    pl011_println!("[DEBUG] spawn() returned");
-    spawn_result.expect("Failed to spawn thread 1");
-    pl011_println!("[BOOT] Thread 1 spawned!");
+        )
+        .expect("Failed to spawn thread 1");
 
     // Spawn Thread 2
-    pl011_println!("[BOOT] Spawning Thread 2...");
     KERNEL
         .spawn(
             || {
+                pl011_println!("[Thread 2] Started!");
                 let mut counter = 0u64;
                 loop {
                     counter = counter.wrapping_add(1);
-                    if counter % 500_000 == 0 {
+                    if counter % 5_000_000 == 0 {
                         pl011_println!("[Thread 2] counter = {}", counter);
                     }
-                    for _ in 0..1000 {
+                    for _ in 0..100 {
                         core::hint::spin_loop();
                     }
                 }
@@ -182,28 +180,27 @@ pub fn kernel_main() -> ! {
             128, // Normal priority
         )
         .expect("Failed to spawn thread 2");
-    pl011_println!("[BOOT] Thread 2 spawned!");
 
-    // Spawn Thread 3 (lower priority)
-    pl011_println!("[BOOT] Spawning Thread 3 (low priority)...");
+    // Spawn Thread 3 (lower priority - will run when higher priority threads idle)
     KERNEL
         .spawn(
             || {
+                pl011_println!("[Thread 3] Started!");
                 let mut counter = 0u64;
                 loop {
                     counter = counter.wrapping_add(1);
-                    if counter % 1_000_000 == 0 {
-                        pl011_println!("[Thread 3] low-priority counter = {}", counter);
+                    if counter % 5_000_000 == 0 {
+                        pl011_println!("[Thread 3] counter = {}", counter);
                     }
-                    for _ in 0..1000 {
+                    for _ in 0..100 {
                         core::hint::spin_loop();
                     }
                 }
             },
-            32, // Low priority
+            128, // Same priority as others for fair round-robin
         )
         .expect("Failed to spawn thread 3");
-    pl011_println!("[BOOT] Thread 3 spawned!");
+    pl011_println!("[BOOT] 3 threads spawned!");
 
     // Set up the preemption timer (1ms time slices)
     pl011_println!("[BOOT] Setting up preemption timer (1ms)...");
