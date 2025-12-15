@@ -286,20 +286,32 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
     ///
     /// This picks the first thread from the scheduler and starts running it.
     /// Called once during kernel initialization.
+    ///
+    /// Note: This function handles interrupt enabling internally - do NOT enable
+    /// interrupts before calling this function.
     pub fn start_first_thread(&self) {
         if !self.is_initialized() {
             return;
         }
 
+        // Ensure interrupts are disabled during setup
+        A::disable_interrupts();
+
         let mut current_guard = self.current_thread.lock();
 
         if current_guard.is_some() {
             // Already have a running thread
+            A::enable_interrupts();
             return;
         }
 
         if let Some(next) = self.scheduler.pick_next(0) {
             let next_ctx = next.0.context_ptr();
+
+            #[cfg(target_arch = "aarch64")]
+            crate::pl011_println!("[start_first_thread] Got thread {}, ctx={:#x}",
+                next.id().get(), next_ctx as usize);
+
             let running = next.start_running();
             *current_guard = Some(running);
             drop(current_guard);
@@ -312,6 +324,15 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
                 );
             }
 
+            #[cfg(target_arch = "aarch64")]
+            crate::pl011_println!("[start_first_thread] IRQ context set, enabling interrupts...");
+
+            // NOW enable interrupts - current_thread is set and IRQ context is ready
+            A::enable_interrupts();
+
+            #[cfg(target_arch = "aarch64")]
+            crate::pl011_println!("[start_first_thread] About to context_switch...");
+
             // Jump to the first thread (no previous context to save)
             if !next_ctx.is_null() {
                 unsafe {
@@ -323,6 +344,10 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
                     );
                 }
             }
+        } else {
+            #[cfg(target_arch = "aarch64")]
+            crate::pl011_println!("[start_first_thread] No threads to run!");
+            A::enable_interrupts();
         }
     }
 

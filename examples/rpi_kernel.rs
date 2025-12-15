@@ -213,10 +213,9 @@ pub fn kernel_main() -> ! {
     }
     pl011_println!("[BOOT] Timer configured!");
 
-    // Enable interrupts
-    pl011_println!("[BOOT] Enabling interrupts...");
-    DefaultArch::enable_interrupts();
-    pl011_println!("[BOOT] Interrupts enabled!");
+    // NOTE: Do NOT enable interrupts here - start_first_thread() handles that
+    // after setting up the current thread. This prevents an IRQ from firing
+    // before we have a thread context to save to.
 
     pl011_println!("");
     pl011_println!("[BOOT] Starting scheduler - threads will now run!");
@@ -224,6 +223,7 @@ pub fn kernel_main() -> ! {
     pl011_println!("");
 
     // Start running the first thread - this never returns
+    // (also enables interrupts after setting up the thread context)
     KERNEL.start_first_thread();
 
     // If we somehow get here, halt
