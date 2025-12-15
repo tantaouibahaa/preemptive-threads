@@ -19,7 +19,7 @@
 //!
 //! Stack and heap are placed after BSS.
 
-use core::arch::asm;
+use core::arch::{asm, naked_asm};
 
 // Symbols defined by linker script
 extern "C" {
@@ -42,56 +42,91 @@ extern "C" {
 #[cfg(target_arch = "aarch64")]
 #[link_section = ".text.boot"]
 #[no_mangle]
+#[unsafe(naked)]
 pub unsafe extern "C" fn _start() -> ! {
-    unsafe {
-        // Only CPU 0 should run the kernel
-        // Other CPUs should park (wait in low-power state)
-        asm!(
+    // Boot code in naked assembly - handles EL3/EL2/EL1 entry
+    // Works on both real Pi (starts at EL1/EL2) and QEMU (starts at EL3)
+    naked_asm!(
+            // Park secondary CPUs (only CPU 0 runs the kernel)
             "mrs x0, mpidr_el1",
             "and x0, x0, #0xFF",
-            "cbz x0, 2f",       // CPU 0 continues
-            "1: wfe",           // Other CPUs wait forever
-            "b 1b",
-            "2:",
-            options(nomem, nostack)
-        );
+            "cbnz x0, .Lpark",
 
-        // Set up stack pointer
-        asm!(
+            // Check current exception level and drop to EL1 if needed
+            "mrs x0, CurrentEL",
+            "lsr x0, x0, #2",           // Extract EL field (bits 3:2)
+            "cmp x0, #3",
+            "b.eq .Lfrom_el3",
+            "cmp x0, #2",
+            "b.eq .Lfrom_el2",
+            "b .Lat_el1",               // Already at EL1
+
+        ".Lfrom_el3:",
+            // At EL3: Configure EL2 and drop to EL1
+            // SCR_EL3: RW=1 (EL2 is AArch64), NS=1 (non-secure), HCE=1
+            "mov x0, #0b1010001001",    // RW | HCE | NS | RES1 bits
+            "msr scr_el3, x0",
+
+            // SPSR_EL3: Return to EL1h with interrupts masked
+            "mov x0, #0b00101",         // EL1h
+            "orr x0, x0, #(0xF << 6)",  // Mask DAIF
+            "msr spsr_el3, x0",
+
+            // Set return address to EL1 entry
+            "adr x0, .Lat_el1",
+            "msr elr_el3, x0",
+            "eret",
+
+        ".Lfrom_el2:",
+            // At EL2: Configure and drop to EL1
+            // HCR_EL2: RW=1 (EL1 is AArch64)
+            "mov x0, #(1 << 31)",       // RW bit
+            "msr hcr_el2, x0",
+
+            // SPSR_EL2: Return to EL1h with interrupts masked
+            "mov x0, #0b00101",         // EL1h
+            "orr x0, x0, #(0xF << 6)",  // Mask DAIF
+            "msr spsr_el2, x0",
+
+            // Set return address to EL1 entry
+            "adr x0, .Lat_el1",
+            "msr elr_el2, x0",
+            "eret",
+
+        ".Lat_el1:",
+            // Now at EL1 - set up stack
             "adrp x0, __stack_top",
             "add x0, x0, :lo12:__stack_top",
             "mov sp, x0",
-            options(nomem, nostack)
-        );
 
-        // Clear BSS section
-        asm!(
+            // Clear BSS section
             "adrp x0, __bss_start",
             "add x0, x0, :lo12:__bss_start",
             "adrp x1, __bss_end",
             "add x1, x1, :lo12:__bss_end",
-            "3:",
+        ".Lclear_bss:",
             "cmp x0, x1",
-            "b.ge 4f",
+            "b.ge .Lbss_done",
             "str xzr, [x0], #8",
-            "b 3b",
-            "4:",
-            options(nomem, nostack)
-        );
+            "b .Lclear_bss",
+        ".Lbss_done:",
 
-        // Initialize floating point and SIMD
-        asm!(
-            // Don't trap FP/SIMD access
+            // Enable FP/SIMD (don't trap to EL1)
             "mrs x0, cpacr_el1",
-            "orr x0, x0, #(3 << 20)",  // FPEN = 11 (no trapping)
+            "orr x0, x0, #(3 << 20)",   // FPEN = 11
             "msr cpacr_el1, x0",
             "isb",
-            options(nomem, nostack)
-        );
 
-        // Jump to Rust boot code
-        boot_rust();
-    }
+            // Jump to Rust boot code
+            "b {boot_rust}",
+
+        ".Lpark:",
+            // Secondary CPUs wait forever
+            "wfe",
+            "b .Lpark",
+
+            boot_rust = sym boot_rust,
+    );
 }
 
 /// Rust boot code - called after basic ASM setup.

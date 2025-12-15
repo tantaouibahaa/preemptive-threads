@@ -128,6 +128,8 @@ pub mod aarch64_vectors;
 pub mod aarch64_boot;
 #[cfg(target_arch = "aarch64")]
 pub mod uart;
+#[cfg(target_arch = "aarch64")]
+pub mod uart_pl011;
 
 // Always use AArch64 - single target (Raspberry Pi Zero 2 W)
 #[cfg(target_arch = "aarch64")]
