@@ -22,6 +22,9 @@ default = ["full-fpu"]
 full-fpu = []
 # Enable std compatibility layer for host testing
 std-shim = []
+# Target QEMU virt machine instead of real Pi hardware
+# Use this for full preemption testing in QEMU (GIC works on virt, not on raspi3b)
+qemu-virt = []
 
 [profile.dev]
 panic = "abort"

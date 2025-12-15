@@ -62,18 +62,24 @@ pub unsafe extern "C" fn _start() -> ! {
             "b .Lat_el1",               // Already at EL1
 
         ".Lfrom_el3:",
-            // At EL3: Configure EL2 and drop to EL1
-            // SCR_EL3: RW=1 (EL2 is AArch64), NS=1 (non-secure), HCE=1
-            "mov x0, #0b1010001001",    // RW | HCE | NS | RES1 bits
-            "msr scr_el3, x0",
+            // At EL3: Drop to EL2 first, then EL2 will drop to EL1
+            // This two-stage approach works better with QEMU
 
-            // SPSR_EL3: Return to EL1h with interrupts masked
-            "mov x0, #0b00101",         // EL1h
-            "orr x0, x0, #(0xF << 6)",  // Mask DAIF
+            // Set up generic timer frequency (required for QEMU)
+            "ldr x0, =62500000",        // 62.5 MHz (QEMU default)
+            "msr cntfrq_el0, x0",
+
+            // SCR_EL3: RW=1 (bit 10), HCE=1 (bit 8), NS=1 (bit 0), ST=1 (bit 11)
+            "mov x0, #0xd01",           // RW | ST | HCE | NS
+            "msr scr_el3, x0",
+            "isb",
+
+            // SPSR_EL3: Return to EL2h with interrupts masked
+            "mov x0, #0x3c9",           // EL2h (0x9) | DAIF masked (0x3c0)
             "msr spsr_el3, x0",
 
-            // Set return address to EL1 entry
-            "adr x0, .Lat_el1",
+            // Set return address to EL2 setup
+            "adr x0, .Lfrom_el2",
             "msr elr_el3, x0",
             "eret",
 
@@ -136,8 +142,27 @@ unsafe fn boot_rust() -> ! {
         // Install exception vector table
         super::aarch64_vectors::install_vector_table();
 
-        // Initialize GIC interrupt controller
-        super::aarch64_gic::init();
+        // Initialize GIC
+        // - qemu-virt: GIC at 0x08000000 (fully emulated, works)
+        // - real Pi/raspi3b: GIC at 0xFF841000 (not emulated in QEMU raspi3b)
+        #[cfg(feature = "qemu-virt")]
+        {
+            let gic_ok = super::aarch64_gic::init();
+            // In virt mode, GIC should always work
+            if !gic_ok {
+                // Something is wrong if GIC fails on virt
+                loop {
+                    core::arch::asm!("wfe", options(nomem, nostack));
+                }
+            }
+        }
+
+        // On real Pi, try to init GIC but don't fail if it's not there
+        // (QEMU raspi3b doesn't emulate it)
+        #[cfg(not(feature = "qemu-virt"))]
+        {
+            let _ = super::aarch64_gic::init();
+        }
 
         // Initialize architecture-specific features
         super::aarch64::init();

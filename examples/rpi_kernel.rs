@@ -139,9 +139,10 @@ pub fn kernel_main() -> ! {
     }
     pl011_println!("[BOOT] Kernel registered globally");
 
-    // Spawn Thread 1
-    pl011_println!("[BOOT] Spawning Thread 1...");
-    KERNEL
+    // Spawn Thread 1 - with debug output
+    pl011_println!("[BOOT] About to spawn Thread 1...");
+    pl011_println!("[DEBUG] Calling KERNEL.spawn()...");
+    let spawn_result = KERNEL
         .spawn(
             || {
                 let mut counter = 0u64;
@@ -157,8 +158,9 @@ pub fn kernel_main() -> ! {
                 }
             },
             128, // Normal priority
-        )
-        .expect("Failed to spawn thread 1");
+        );
+    pl011_println!("[DEBUG] spawn() returned");
+    spawn_result.expect("Failed to spawn thread 1");
     pl011_println!("[BOOT] Thread 1 spawned!");
 
     // Spawn Thread 2

@@ -305,10 +305,29 @@ impl StackPool {
 
         #[cfg(not(feature = "std-shim"))]
         {
-            // In bare-metal mode, stacks are allocated from a fixed memory region
-            // This is handled by the bump allocator in the example
-            let _ = usable_size;
-            unimplemented!("Stack allocation in bare-metal requires custom allocator")
+            // In bare-metal mode, use the global allocator (e.g., bump allocator)
+            use alloc::alloc::{alloc, Layout};
+
+            let layout = Layout::from_size_align(usable_size, 4096).ok()?;
+            let memory = unsafe { alloc(layout) };
+
+            if memory.is_null() {
+                return None;
+            }
+
+            let memory = unsafe { NonNull::new_unchecked(memory) };
+
+            let stack = Stack {
+                memory,
+                usable_size,
+                size_class,
+                has_guard_pages: false,
+            };
+
+            self.stats.allocated.fetch_add(1, Ordering::AcqRel);
+            self.stats.in_use.fetch_add(1, Ordering::AcqRel);
+
+            Some(stack)
         }
     }
 }

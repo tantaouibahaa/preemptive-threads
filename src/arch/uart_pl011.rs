@@ -1,21 +1,25 @@
-//! PL011 UART driver for Raspberry Pi (QEMU compatible).
+//! PL011 UART driver for Raspberry Pi / QEMU.
 //!
 //! This driver uses the PL011 UART which is mapped to QEMU's `-serial stdio`.
-//! The Mini UART is not emulated by QEMU's raspi3b machine.
 //!
-//! # Memory Map
+//! # Platform Support
 //!
-//! Peripheral base for BCM2837: 0x3F000000
-//! - PL011 UART base: 0x3F201000
+//! - **Real Pi / QEMU raspi3b**: PL011 @ 0x3F201000
+//! - **QEMU virt machine**: PL011 @ 0x09000000
+//!
+//! Use the `qemu-virt` feature to target the virt machine.
 
 use core::fmt::{self, Write};
 use core::ptr::{read_volatile, write_volatile};
 
-// BCM2837 peripheral base address
-const PERIPHERAL_BASE: usize = 0x3F00_0000;
+// Platform-dependent UART base address
+#[cfg(feature = "qemu-virt")]
+const UART0_BASE: usize = 0x0900_0000; // QEMU virt PL011
 
-// PL011 UART registers
-const UART0_BASE: usize = PERIPHERAL_BASE + 0x20_1000;
+#[cfg(not(feature = "qemu-virt"))]
+const UART0_BASE: usize = 0x3F20_1000; // BCM2837 PL011
+
+// PL011 UART registers (offsets from base)
 const UART0_DR: usize = UART0_BASE + 0x00;     // Data Register
 const UART0_FR: usize = UART0_BASE + 0x18;     // Flag Register
 const UART0_IBRD: usize = UART0_BASE + 0x24;   // Integer Baud Rate Divisor
@@ -24,10 +28,16 @@ const UART0_LCRH: usize = UART0_BASE + 0x2C;   // Line Control Register
 const UART0_CR: usize = UART0_BASE + 0x30;     // Control Register
 const UART0_ICR: usize = UART0_BASE + 0x44;    // Interrupt Clear Register
 
-// GPIO registers for pin configuration
+// GPIO registers for pin configuration (only used on real Pi)
+#[cfg(not(feature = "qemu-virt"))]
+const PERIPHERAL_BASE: usize = 0x3F00_0000;
+#[cfg(not(feature = "qemu-virt"))]
 const GPIO_BASE: usize = PERIPHERAL_BASE + 0x20_0000;
+#[cfg(not(feature = "qemu-virt"))]
 const GPFSEL1: usize = GPIO_BASE + 0x04;       // GPIO Function Select 1 (pins 10-19)
+#[cfg(not(feature = "qemu-virt"))]
 const GPPUD: usize = GPIO_BASE + 0x94;         // GPIO Pull-up/down Enable
+#[cfg(not(feature = "qemu-virt"))]
 const GPPUDCLK0: usize = GPIO_BASE + 0x98;     // GPIO Pull-up/down Clock 0
 
 // Flag register bits
@@ -46,20 +56,25 @@ pub unsafe fn init() {
         // Disable UART0 while configuring
         write_volatile(UART0_CR as *mut u32, 0);
 
-        // Configure GPIO pins 14 and 15 for UART (ALT0 function for PL011)
-        let mut gpfsel1 = read_volatile(GPFSEL1 as *const u32);
-        // Clear bits 12-14 (GPIO14) and 15-17 (GPIO15)
-        gpfsel1 &= !((7 << 12) | (7 << 15));
-        // Set ALT0 (binary 100) for both pins
-        gpfsel1 |= (4 << 12) | (4 << 15);
-        write_volatile(GPFSEL1 as *mut u32, gpfsel1);
+        // GPIO configuration is only needed on real Pi hardware
+        // QEMU virt machine has UART pre-configured
+        #[cfg(not(feature = "qemu-virt"))]
+        {
+            // Configure GPIO pins 14 and 15 for UART (ALT0 function for PL011)
+            let mut gpfsel1 = read_volatile(GPFSEL1 as *const u32);
+            // Clear bits 12-14 (GPIO14) and 15-17 (GPIO15)
+            gpfsel1 &= !((7 << 12) | (7 << 15));
+            // Set ALT0 (binary 100) for both pins
+            gpfsel1 |= (4 << 12) | (4 << 15);
+            write_volatile(GPFSEL1 as *mut u32, gpfsel1);
 
-        // Disable pull-up/down for pins 14 and 15
-        write_volatile(GPPUD as *mut u32, 0);
-        delay_cycles(150);
-        write_volatile(GPPUDCLK0 as *mut u32, (1 << 14) | (1 << 15));
-        delay_cycles(150);
-        write_volatile(GPPUDCLK0 as *mut u32, 0);
+            // Disable pull-up/down for pins 14 and 15
+            write_volatile(GPPUD as *mut u32, 0);
+            delay_cycles(150);
+            write_volatile(GPPUDCLK0 as *mut u32, (1 << 14) | (1 << 15));
+            delay_cycles(150);
+            write_volatile(GPPUDCLK0 as *mut u32, 0);
+        }
 
         // Clear all pending interrupts
         write_volatile(UART0_ICR as *mut u32, 0x7FF);
@@ -84,6 +99,7 @@ pub unsafe fn init() {
 }
 
 /// Spin-wait for approximately `count` CPU cycles.
+#[cfg(not(feature = "qemu-virt"))]
 #[inline]
 fn delay_cycles(count: u32) {
     for _ in 0..count {

@@ -1,12 +1,15 @@
-//! GIC-400 (Generic Interrupt Controller v2) for Raspberry Pi Zero 2 W.
+//! GIC-400 (Generic Interrupt Controller v2) driver.
 //!
-//! The BCM2837 SoC uses a GIC-400 for interrupt management. This module
-//! provides initialization and control of the interrupt controller.
+//! This module provides initialization and control of the GIC interrupt controller.
 //!
-//! # Memory Map (BCM2837)
+//! # Platform Support
 //!
-//! - GIC Distributor: `0xFF84_1000`
-//! - GIC CPU Interface: `0xFF84_2000`
+//! The GIC addresses differ between platforms:
+//!
+//! - **Real Pi / QEMU raspi3b**: BCM2837 GIC @ `0xFF84_1000` (not emulated in QEMU)
+//! - **QEMU virt machine**: GICv2 @ `0x0800_0000` (fully emulated)
+//!
+//! Use the `qemu-virt` feature to target the virt machine for full preemption testing.
 //!
 //! # Interrupts
 //!
@@ -19,10 +22,16 @@
 
 use core::ptr::{read_volatile, write_volatile};
 
-// BCM2837 GIC-400 base addresses
-// Note: These are the ARM-local peripherals addresses
-const GICD_BASE: usize = 0xFF84_1000; // GIC Distributor
-const GICC_BASE: usize = 0xFF84_2000; // GIC CPU Interface
+// GIC base addresses - platform dependent
+#[cfg(feature = "qemu-virt")]
+const GICD_BASE: usize = 0x0800_0000; // QEMU virt GIC Distributor
+#[cfg(feature = "qemu-virt")]
+const GICC_BASE: usize = 0x0801_0000; // QEMU virt GIC CPU Interface
+
+#[cfg(not(feature = "qemu-virt"))]
+const GICD_BASE: usize = 0xFF84_1000; // BCM2837 GIC Distributor
+#[cfg(not(feature = "qemu-virt"))]
+const GICC_BASE: usize = 0xFF84_2000; // BCM2837 GIC CPU Interface
 
 // Distributor registers (offsets from GICD_BASE)
 const GICD_CTLR: usize = 0x000;       // Distributor Control Register
@@ -67,7 +76,17 @@ impl Gic400 {
     ///
     /// Must be called once during system initialization with interrupts
     /// disabled. The GIC memory regions must be mapped and accessible.
-    pub unsafe fn init() {
+    ///
+    /// Returns false if GIC is not accessible (e.g., QEMU without full GIC emulation).
+    pub unsafe fn init() -> bool {
+        // First, check if GIC is accessible by reading GICD_TYPER
+        // If this returns 0xFFFFFFFF or causes issues, GIC is not present
+        let typer = unsafe { read_volatile((GICD_BASE + GICD_TYPER) as *const u32) };
+        if typer == 0xFFFF_FFFF || typer == 0 {
+            // GIC not present or not responding - skip initialization
+            return false;
+        }
+
         // Disable distributor while configuring
         unsafe {
             write_volatile((GICD_BASE + GICD_CTLR) as *mut u32, 0);
@@ -137,6 +156,8 @@ impl Gic400 {
         unsafe {
             Self::init_cpu_interface();
         }
+
+        true
     }
 
     /// Initialize the CPU interface for the current CPU.
@@ -342,9 +363,14 @@ impl Gic400 {
 /// # Safety
 ///
 /// Must be called once during system initialization.
-pub unsafe fn init() {
+/// Returns true if GIC was initialized, false if GIC is not available.
+pub unsafe fn init() -> bool {
     unsafe {
-        Gic400::init();
-        Gic400::enable_timer_interrupt();
+        if Gic400::init() {
+            Gic400::enable_timer_interrupt();
+            true
+        } else {
+            false
+        }
     }
 }

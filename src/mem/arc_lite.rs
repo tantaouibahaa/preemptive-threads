@@ -64,8 +64,25 @@ impl<T> ArcLite<T> {
         
         #[cfg(not(feature = "std-shim"))]
         {
-            // In a real no_std environment, we'd need a custom allocator
-            unimplemented!("ArcLite requires a custom allocator in no_std environments")
+            // Use the global allocator in bare-metal environments
+            extern crate alloc;
+            use alloc::alloc::alloc;
+
+            let alloc_ptr = unsafe { alloc(layout) as *mut ArcLiteInner<T> };
+            if alloc_ptr.is_null() {
+                panic!("Failed to allocate memory for ArcLite");
+            }
+
+            unsafe {
+                core::ptr::write(alloc_ptr, ArcLiteInner {
+                    count: AtomicUsize::new(1),
+                    data,
+                });
+            }
+
+            Self {
+                ptr: unsafe { NonNull::new_unchecked(alloc_ptr) },
+            }
         }
     }
     

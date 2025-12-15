@@ -115,9 +115,16 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
     where
         F: FnOnce() + Send + 'static,
     {
+        // Debug: entering spawn
+        #[cfg(target_arch = "aarch64")]
+        crate::pl011_println!("[spawn] entering spawn()");
+
         if !self.is_initialized() {
             return Err(SpawnError::NotInitialized);
         }
+
+        #[cfg(target_arch = "aarch64")]
+        crate::pl011_println!("[spawn] allocating stack...");
 
         // Allocate stack
         let stack = self
@@ -125,12 +132,21 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
             .allocate(StackSizeClass::Medium)
             .ok_or(SpawnError::OutOfMemory)?;
 
+        #[cfg(target_arch = "aarch64")]
+        crate::pl011_println!("[spawn] stack allocated, getting thread ID...");
+
         // Generate unique thread ID
         let thread_id = self.next_thread_id();
+
+        #[cfg(target_arch = "aarch64")]
+        crate::pl011_println!("[spawn] boxing closure...");
 
         // Box the closure to move it to the heap
         let closure_box = Box::new(entry_point);
         let closure_ptr = Box::into_raw(closure_box);
+
+        #[cfg(target_arch = "aarch64")]
+        crate::pl011_println!("[spawn] closure boxed");
 
         // Create trampoline that will call the closure
         // The trampoline is a fn() that we'll set up in the context
@@ -153,14 +169,23 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
             }
         }
 
+        #[cfg(target_arch = "aarch64")]
+        crate::pl011_println!("[spawn] getting stack bottom...");
+
         // Get the stack bottom (top of stack memory, since stack grows down)
         let stack_bottom = stack.stack_bottom();
+
+        #[cfg(target_arch = "aarch64")]
+        crate::pl011_println!("[spawn] creating Thread::new...");
 
         // Create thread with the trampoline as entry point
         // We'll pass closure_ptr via the thread's context (x0 register on ARM64)
         let entry_fn: fn() = || {};  // Placeholder - actual entry is set up in context
 
         let (thread, join_handle) = Thread::new(thread_id, stack, entry_fn, priority);
+
+        #[cfg(target_arch = "aarch64")]
+        crate::pl011_println!("[spawn] setting up initial context...");
 
         // Set up the initial context to start at the trampoline with closure_ptr as arg
         thread.setup_initial_context(
@@ -169,9 +194,15 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
             closure_ptr as usize,
         );
 
+        #[cfg(target_arch = "aarch64")]
+        crate::pl011_println!("[spawn] enqueueing in scheduler...");
+
         // Convert to ReadyRef and enqueue in scheduler
         let ready_ref = ReadyRef(thread);
         self.scheduler.enqueue(ready_ref);
+
+        #[cfg(target_arch = "aarch64")]
+        crate::pl011_println!("[spawn] done!");
 
         Ok(join_handle)
     }
