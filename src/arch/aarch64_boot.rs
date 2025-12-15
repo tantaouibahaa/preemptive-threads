@@ -142,26 +142,18 @@ unsafe fn boot_rust() -> ! {
         // Install exception vector table
         super::aarch64_vectors::install_vector_table();
 
-        // Initialize GIC
-        // - qemu-virt: GIC at 0x08000000 (fully emulated, works)
-        // - real Pi/raspi3b: GIC at 0xFF841000 (not emulated in QEMU raspi3b)
+        // Initialize GIC (only on qemu-virt where it's properly emulated)
+        // QEMU raspi3b does NOT emulate BCM2837's GIC - accessing it causes data abort.
+        // Real Pi hardware has GIC, but for now we only init it on qemu-virt.
         #[cfg(feature = "qemu-virt")]
         {
             let gic_ok = super::aarch64_gic::init();
-            // In virt mode, GIC should always work
             if !gic_ok {
-                // Something is wrong if GIC fails on virt
+                // GIC init failed on virt - something is wrong
                 loop {
                     core::arch::asm!("wfe", options(nomem, nostack));
                 }
             }
-        }
-
-        // On real Pi, try to init GIC but don't fail if it's not there
-        // (QEMU raspi3b doesn't emulate it)
-        #[cfg(not(feature = "qemu-virt"))]
-        {
-            let _ = super::aarch64_gic::init();
         }
 
         // Initialize architecture-specific features

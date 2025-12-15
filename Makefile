@@ -5,7 +5,7 @@ TARGET := aarch64-unknown-none
 KERNEL := target/$(TARGET)/release/examples/rpi_kernel
 KERNEL_BIN := kernel8.img
 
-.PHONY: build build-virt run run-virt debug clean test binary
+.PHONY: build build-virt run run-virt debug debug-virt clean test test-qemu test-virt binary
 
 #=============================================================================
 # Default: Build for real Pi / QEMU raspi3b (no preemption in QEMU)
@@ -27,7 +27,7 @@ run: build
 #=============================================================================
 
 build-virt:
-	cargo +nightly build --release --example rpi_kernel --target $(TARGET) --features qemu-virt
+	RUSTFLAGS="-C link-arg=-Tqemu_virt.ld" cargo +nightly build --release --example rpi_kernel --target $(TARGET) --features qemu-virt
 
 # QEMU virt - full preemption works (GIC emulated at 0x08000000)
 run-virt: build-virt
@@ -83,6 +83,28 @@ binary: build
 
 test:
 	cargo test --features std-shim
+
+# Quick QEMU test (5 seconds) - raspi3b
+test-qemu: build
+	@rm -f /tmp/qemu_output.txt /tmp/qemu_debug.txt
+	@echo "Running raspi3b for 5 seconds..."
+	@qemu-system-aarch64 -M raspi3b -kernel $(KERNEL) \
+		-serial file:/tmp/qemu_output.txt -display none \
+		-d cpu_reset,int 2>/tmp/qemu_debug.txt & \
+	QEMU_PID=$$!; sleep 5; kill $$QEMU_PID 2>/dev/null; wait $$QEMU_PID 2>/dev/null; \
+	echo "=== Serial Output ==="; cat /tmp/qemu_output.txt 2>/dev/null || echo "(no output)"; \
+	echo "=== QEMU Debug (last 20 lines) ==="; tail -20 /tmp/qemu_debug.txt 2>/dev/null
+
+# Quick QEMU test (5 seconds) - virt with preemption
+test-virt: build-virt
+	@rm -f /tmp/qemu_output.txt /tmp/qemu_debug.txt
+	@echo "Running virt for 5 seconds..."
+	@qemu-system-aarch64 -M virt -cpu cortex-a53 -kernel $(KERNEL) \
+		-serial file:/tmp/qemu_output.txt -display none \
+		-d cpu_reset,int 2>/tmp/qemu_debug.txt & \
+	QEMU_PID=$$!; sleep 5; kill $$QEMU_PID 2>/dev/null; wait $$QEMU_PID 2>/dev/null; \
+	echo "=== Serial Output ==="; cat /tmp/qemu_output.txt 2>/dev/null || echo "(no output)"; \
+	echo "=== QEMU Debug (last 20 lines) ==="; tail -20 /tmp/qemu_debug.txt 2>/dev/null
 
 #=============================================================================
 # Utilities
