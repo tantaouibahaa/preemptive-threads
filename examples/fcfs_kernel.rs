@@ -123,7 +123,7 @@ pub fn kernel_main() -> ! {
     pl011_println!("");
 
     // Initialize the kernel
-    pl011_println!("[BOOT] Initializing kernel...");
+    pl011_println!("[BOOT] Initializing kernel... [FIRST COME FIRST SERVE]");
     KERNEL.init().expect("Failed to initialize kernel");
     pl011_println!("[BOOT] Kernel initialized!");
 
@@ -181,7 +181,7 @@ pub fn kernel_main() -> ! {
                 let mut counter = 0u64;
                 loop {
                     counter = counter.wrapping_add(1);
-                    if counter % 5_000_000 == 0 {
+                    if counter % 20_000_000 == 0 {
                         pl011_println!("[Thread 3] counter = {}", counter);
                         pl011_println!("Yielding to whom? maybe 1, maybe 2");
                         KERNEL.yield_now();

@@ -123,7 +123,7 @@ pub fn kernel_main() -> ! {
     pl011_println!("");
 
     // Initialize the kernel
-    pl011_println!("[BOOT] Initializing kernel...");
+    pl011_println!("[BOOT] Initializing kernel... [RPI]");
     KERNEL.init().expect("Failed to initialize kernel");
     pl011_println!("[BOOT] Kernel initialized!");
 
