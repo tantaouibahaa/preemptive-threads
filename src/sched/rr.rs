@@ -22,6 +22,15 @@ pub struct RoundRobinScheduler {
     runnable_threads: AtomicUsize,
 }
 
+
+pub struct FirstComeFirstServeScheduler {
+    num_cpus: usize,
+    run_queues: Box<CpuRunQueue>,  // Note: single queue, not a slice
+    total_threads: AtomicUsize,
+    runnable_threads: AtomicUsize,
+}
+
+
 /// Per-CPU run queue with priority levels.
 struct CpuRunQueue {
     /// High priority queue (192-255)
@@ -46,6 +55,37 @@ struct LockFreeQueue {
 struct QueueNode {
     thread: Option<ReadyRef>,
     next: AtomicPtr<QueueNode>,
+}
+
+impl Scheduler for FirstComeFirstServeScheduler {
+    fn enqueue(&self, thread: ReadyRef) {
+        self.queue.push(thread);
+        self.runnable_threads.fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn pick_next(&self, _cpu_id: CpuId) -> Option<ReadyRef> {
+        let thread = self.queue.try_pop()?;
+        self.runnable_threads.fetch_sub(1, Ordering::AcqRel);
+        Some(thread)
+    }
+
+    fn on_tick(&self, _current: &RunningRef) -> Option<ReadyRef> {
+        None
+    }
+
+    fn on_yield(&self, current: RunningRef) {
+        let ready = current.stop_running();
+        self.enqueue(ready);
+    }
+
+    fn on_block(&self, current: RunningRef) {
+        current.block();
+    }
+
+    fn wake_up(&self, thread: ReadyRef) {
+        self.enqueue(thread);
+    }
+
 }
 
 impl RoundRobinScheduler {
@@ -97,7 +137,7 @@ impl RoundRobinScheduler {
     fn try_steal_work(&self, requesting_cpu: CpuId) -> Option<ReadyRef> {
         // Start from a random CPU to avoid always stealing from CPU 0
         let start_cpu = (requesting_cpu + 1) % self.num_cpus;
-        
+
         for i in 0..self.num_cpus {
             let victim_cpu = (start_cpu + i) % self.num_cpus;
             if victim_cpu == requesting_cpu {
@@ -105,7 +145,7 @@ impl RoundRobinScheduler {
             }
 
             let victim_queue = &self.run_queues[victim_cpu];
-            
+
             // Try to steal from normal priority first (most likely to have work)
             if let Some(thread) = victim_queue.normal_priority.try_pop() {
                 victim_queue.thread_count.fetch_sub(1, Ordering::AcqRel);
@@ -128,7 +168,7 @@ impl Scheduler for RoundRobinScheduler {
         let priority = thread.priority();
         let cpu_id = self.select_cpu();
         let queue = &self.run_queues[cpu_id];
-        
+
         let priority_queue = match Self::priority_level(priority) {
             PriorityLevel::High => &queue.high_priority,
             PriorityLevel::Normal => &queue.normal_priority,
@@ -187,15 +227,15 @@ impl Scheduler for RoundRobinScheduler {
         if current.time_slice().should_preempt() {
             // Convert running thread back to ready
             let ready = current.prepare_preemption();
-            
+
             // Find a higher priority thread to run instead
             let cpu_id = current.last_cpu();
-            
+
             // Only preempt if there's higher priority work available
             if cpu_id < self.num_cpus {
                 let queue = &self.run_queues[cpu_id];
                 let current_priority = current.priority();
-                
+
                 // Check for higher priority threads
                 match Self::priority_level(current_priority) {
                     PriorityLevel::Idle => {
@@ -360,7 +400,7 @@ impl LockFreeQueue {
                     // Speculatively read the thread from next node
                     // This must be done before the CAS to avoid races
                     let thread = unsafe { (*next).thread.take() };
-                    
+
                     // Try to advance head to next node
                     if self.head.compare_exchange_weak(
                         head,
@@ -389,7 +429,7 @@ impl LockFreeQueue {
     fn peek(&self) -> Option<&ReadyRef> {
         let head = self.head.load(Ordering::Acquire);
         let next = unsafe { (*head).next.load(Ordering::Acquire) };
-        
+
         if next.is_null() {
             None
         } else {
@@ -401,7 +441,7 @@ impl LockFreeQueue {
 impl Drop for LockFreeQueue {
     fn drop(&mut self) {
         while self.try_pop().is_some() {}
-        
+
         let head = self.head.load(Ordering::Acquire);
         if !head.is_null() {
             unsafe {
@@ -438,7 +478,7 @@ mod tests {
     fn test_scheduler_creation() {
         let scheduler = RoundRobinScheduler::new(4);
         assert_eq!(scheduler.num_cpus, 4);
-        
+
         let (total, runnable, blocked) = scheduler.stats();
         assert_eq!(total, 0);
         assert_eq!(runnable, 0);
