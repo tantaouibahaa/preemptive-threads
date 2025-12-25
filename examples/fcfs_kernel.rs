@@ -196,11 +196,11 @@ pub fn kernel_main() -> ! {
 
     // Set up the preemption timer (1ms time slices)
     pl011_println!("[BOOT] Setting up preemption timer (1ms)...");
-    unsafe {
-        preemptive_threads::arch::aarch64::setup_preemption_timer(1000)
-            .expect("Failed to setup timer");
-    }
-    pl011_println!("[BOOT] Timer configured!");
+    //unsafe {
+    //    preemptive_threads::arch::aarch64::setup_preemption_timer(1000)
+  //          .expect("Failed to setup timer");
+  //  }
+  //  pl011_println!("[BOOT] Timer configured!");
 
     // NOTE: Do NOT enable interrupts here - start_first_thread() handles that
     // after setting up the current thread. This prevents an IRQ from firing
