@@ -135,24 +135,22 @@ pub fn kernel_main() -> ! {
 
     // Spawn Thread 1
     pl011_println!("[BOOT] Spawning threads...");
-    KERNEL
-        .spawn(
-            || {
-                pl011_println!("[Thread 1] Started!");
-                let mut counter = 0u64;
-                loop {
-                    counter = counter.wrapping_add(1);
-                    if counter % 5_000_000 == 0 {
-                        pl011_println!("[Thread 1] counter = {}", counter);
-                    }
-                    // Small busy loop to simulate work
-                    for _ in 0..100 {
-                        core::hint::spin_loop();
-                    }
+    KERNEL.spawn(
+        || {
+            pl011_println!("[Thread 1] Started!");
+            let mut counter = 0u64;
+            loop {
+                counter = counter.wrapping_add(1);
+                if counter % 5_000_000 == 0 {
+                    pl011_println!("[Thread 1] counter = {}", counter);
+                    pl011_println!("Yielding to thread 2");
+                    KERNEL.yield_now();
+
                 }
-            },
-            128, // Normal priority
-        )
+            }
+        },
+        128,
+    )
         .expect("Failed to spawn thread 1");
 
     // Spawn Thread 2
@@ -163,12 +161,12 @@ pub fn kernel_main() -> ! {
                 let mut counter = 0u64;
                 loop {
                     counter = counter.wrapping_add(1);
-                    if counter % 5_000_000 == 0 {
+                    if counter % 10_000_000 == 0 {
                         pl011_println!("[Thread 2] counter = {}", counter);
+                        pl011_println!("Yielding to thread 3");
+                        KERNEL.yield_now();
                     }
-                    for _ in 0..100 {
-                        core::hint::spin_loop();
-                    }
+
                 }
             },
             128, // Normal priority
@@ -185,10 +183,10 @@ pub fn kernel_main() -> ! {
                     counter = counter.wrapping_add(1);
                     if counter % 5_000_000 == 0 {
                         pl011_println!("[Thread 3] counter = {}", counter);
+                        pl011_println!("Yielding to whom? maybe 1, maybe 2");
+                        KERNEL.yield_now();
                     }
-                    for _ in 0..100 {
-                        core::hint::spin_loop();
-                    }
+
                 }
             },
             128,
