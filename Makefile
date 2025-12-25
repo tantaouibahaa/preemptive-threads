@@ -2,7 +2,7 @@
 # Makefile for building and running the kernel
 
 TARGET := aarch64-unknown-none
-KERNEL := target/$(TARGET)/release/examples/rpi_kernel
+KERNEL := target/$(TARGET)/release/examples/fcfs_kernel
 KERNEL_BIN := kernel8.img
 
 .PHONY: build build-virt run run-virt debug debug-virt clean test test-qemu test-virt binary
@@ -12,7 +12,7 @@ KERNEL_BIN := kernel8.img
 #=============================================================================
 
 build:
-	cargo +nightly build --release --example rpi_kernel --target $(TARGET)
+	cargo +nightly build --release --example fcfs_kernel --target $(TARGET)
 
 # QEMU raspi3b - boots and runs but no preemption (GIC not emulated)
 run: build
@@ -27,7 +27,7 @@ run: build
 #=============================================================================
 
 build-virt:
-	RUSTFLAGS="-C link-arg=-Tqemu_virt.ld" cargo +nightly build --release --example rpi_kernel --target $(TARGET) --features qemu-virt
+	RUSTFLAGS="-C link-arg=-Tqemu_virt.ld" cargo +nightly build --release --example fcfs_kernel --target $(TARGET) --features qemu-virt
 
 # QEMU virt - full preemption works (GICv2 emulated at 0x08000000)
 run-virt: build-virt
