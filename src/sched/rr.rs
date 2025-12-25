@@ -25,11 +25,10 @@ pub struct RoundRobinScheduler {
 
 pub struct FirstComeFirstServeScheduler {
     num_cpus: usize,
-    run_queues: Box<CpuRunQueue>,  // Note: single queue, not a slice
+    queue: LockFreeQueue,
     total_threads: AtomicUsize,
     runnable_threads: AtomicUsize,
 }
-
 
 /// Per-CPU run queue with priority levels.
 struct CpuRunQueue {
@@ -85,8 +84,22 @@ impl Scheduler for FirstComeFirstServeScheduler {
     fn wake_up(&self, thread: ReadyRef) {
         self.enqueue(thread);
     }
+    fn set_priority(&self, _thread_id: ThreadId, _priority: u8) {
+        // leaving this empty since this is FCFS
+    }
 
 }
+impl FirstComeFirstServeScheduler {
+    pub fn new(num_cpus: usize) -> Self {
+        Self {
+            num_cpus,
+            queue: LockFreeQueue::new(),
+            total_threads: AtomicUsize::new(0),
+            runnable_threads: AtomicUsize::new(0),
+        }
+    }
+}
+
 
 impl RoundRobinScheduler {
     /// Create a new round-robin scheduler for the given number of CPUs.
