@@ -6,6 +6,8 @@ pub mod rr;
 pub mod trait_def;
 
 pub use rr::RoundRobinScheduler;
+pub use rr::FirstComeFirstServeScheduler;
+
 pub use trait_def::{priority, CpuId, Scheduler};
 
 /// Default scheduler type.
