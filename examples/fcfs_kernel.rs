@@ -194,7 +194,7 @@ pub fn kernel_main() -> ! {
         .expect("Failed to spawn thread 3");
     pl011_println!("[BOOT] 3 threads spawned!");
 
-    // Set up the preemption timer (1ms time slices)
+    // this should be disabled here, when you enable it, the cpu tries to execute some garbage & brreaks the whole program
     pl011_println!("[BOOT] Setting up preemption timer (1ms)...");
     //unsafe {
     //    preemptive_threads::arch::aarch64::setup_preemption_timer(1000)
