@@ -136,7 +136,6 @@ impl Arch for Aarch64Arch {
 
                 "1:",
                 prev = in(reg) prev,
-                next = in(reg) next,
                 out("x9") _,
                 out("x10") _,
                 out("x11") _,

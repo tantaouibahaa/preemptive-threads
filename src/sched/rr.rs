@@ -307,18 +307,6 @@ impl LockFreeQueue {
         }
     }
 
-    /// Warning: This is not atomic and may give inconsistent results under concurrency.
-    fn debug_count(&self) -> usize {
-        let mut count = 0;
-        let head = self.head.load(Ordering::Acquire);
-        let mut current = unsafe { (*head).next.load(Ordering::Acquire) };
-        while !current.is_null() {
-            count += 1;
-            current = unsafe { (*current).next.load(Ordering::Acquire) };
-        }
-        count
-    }
-
     fn debug_list_threads(&self) -> alloc::vec::Vec<usize> {
         let mut ids = alloc::vec::Vec::new();
         let head = self.head.load(Ordering::Acquire);
@@ -389,7 +377,7 @@ impl LockFreeQueue {
                     let _ = self.tail.compare_exchange_weak(
                         tail,
                         next,
-                        Ordering::Release,  /
+                        Ordering::Release,
                         Ordering::Relaxed
                     );
                 } else {
