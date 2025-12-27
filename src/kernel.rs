@@ -417,7 +417,6 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
     ///
     /// This function stores a raw pointer to `self` in a global `AtomicPtr`.
     /// TODO:  try to find another way
-
     pub unsafe fn register_global(&'static self) {
         GLOBAL_KERNEL.store(self as *const _ as *mut (), Ordering::Release);
     }

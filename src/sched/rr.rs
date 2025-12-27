@@ -79,7 +79,7 @@ impl Scheduler for FirstComeFirstServeScheduler {
 
 }
 impl FirstComeFirstServeScheduler {
-    pub fn new(num_cpus: usize) -> Self {
+    pub fn new() -> Self {
         Self {
             queue: LockFreeQueue::new(),
             runnable_threads: AtomicUsize::new(0),

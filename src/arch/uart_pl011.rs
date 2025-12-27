@@ -20,7 +20,7 @@ const UART0_BASE: usize = 0x0900_0000; // QEMU virt PL011
 const UART0_BASE: usize = 0x3F20_1000; // BCM2837 PL011
 
 // PL011 UART registers (offsets from base)
-const UART0_DR: usize = UART0_BASE + 0x00;     // Data Register
+const UART0_DR: usize = UART0_BASE;     // Data Register
 const UART0_FR: usize = UART0_BASE + 0x18;     // Flag Register
 const UART0_IBRD: usize = UART0_BASE + 0x24;   // Integer Baud Rate Divisor
 const UART0_FBRD: usize = UART0_BASE + 0x28;   // Fractional Baud Rate Divisor
