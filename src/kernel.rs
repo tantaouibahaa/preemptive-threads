@@ -263,7 +263,7 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
             #[cfg(target_arch = "aarch64")]
             unsafe {
                 crate::arch::aarch64::set_current_irq_context(
-                    next_ctx as *mut crate::arch::aarch64::Aarch64Context
+                    next_ctx
                 );
             }
 
@@ -392,11 +392,11 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
 
                         if !next_ctx.is_null() {
                             crate::arch::aarch64::set_irq_load_context(
-                                next_ctx as *mut crate::arch::aarch64::Aarch64Context
+                                next_ctx
                             );
                             unsafe {
                                 crate::arch::aarch64::set_current_irq_context(
-                                    next_ctx as *mut crate::arch::aarch64::Aarch64Context
+                                    next_ctx
                                 );
                             }
                         }
