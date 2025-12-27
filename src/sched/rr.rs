@@ -16,9 +16,7 @@ pub struct RoundRobinScheduler {
 
 
 pub struct FirstComeFirstServeScheduler {
-    num_cpus: usize,
     queue: LockFreeQueue,
-    total_threads: AtomicUsize,
     runnable_threads: AtomicUsize,
 }
 
