@@ -8,61 +8,44 @@ use core::arch::asm;
 use portable_atomic::{AtomicU64, AtomicPtr, Ordering};
 use core::ptr::null_mut;
 
-/// Global context pointer for IRQ save (where to save interrupted thread's context).
-/// This is set by the kernel before enabling interrupts.
 pub static IRQ_SAVE_CTX: AtomicPtr<Aarch64Context> = AtomicPtr::new(null_mut());
 
-/// Global context pointer for IRQ load (where to load next thread's context from).
-/// This is updated by the scheduler when a context switch is needed.
+
 pub static IRQ_LOAD_CTX: AtomicPtr<Aarch64Context> = AtomicPtr::new(null_mut());
 
-/// Dedicated IRQ stack (4KB should be plenty for IRQ handling)
-/// This prevents us from using/corrupting the interrupted thread's stack.
+
 #[repr(C, align(16))]
 pub struct IrqStack {
     data: [u8; 4096],
 }
 
-/// The IRQ stack instance
 #[no_mangle]
 pub static mut IRQ_STACK: IrqStack = IrqStack { data: [0; 4096] };
 
-/// Get the top of the IRQ stack (stack grows down)
 #[inline]
 pub fn irq_stack_top() -> *mut u8 {
-    // Use raw pointer to avoid mutable reference to static
     unsafe {
         let ptr = core::ptr::addr_of_mut!(IRQ_STACK);
         (*ptr).data.as_mut_ptr().add(4096)
     }
 }
 
-/// AArch64 architecture implementation.
 pub struct Aarch64Arch;
 
-/// AArch64 saved context structure.
-///
-/// Contains all general-purpose registers, stack pointer, and NEON/FPU state
-/// needed to save and restore thread execution state.
 #[repr(C)]
 #[derive(Debug)]
 pub struct Aarch64Context {
-    /// General-purpose registers x0-x30
     pub x: [u64; 31],
-    /// Stack pointer
     pub sp: u64,
-    /// Program counter  
     pub pc: u64,
-    /// Processor state register
     pub pstate: u64,
-    
-    /// NEON/FPU state (when full-fpu feature is enabled)
+
     #[cfg(feature = "full-fpu")]
-    pub neon_state: [u128; 32], // v0-v31 NEON registers
+    pub neon_state: [u128; 32],
     #[cfg(feature = "full-fpu")]
-    pub fpcr: u32, // Floating-point control register
+    pub fpcr: u32,
     #[cfg(feature = "full-fpu")]
-    pub fpsr: u32, // Floating-point status register
+    pub fpsr: u32,
 }
 
 impl Default for Aarch64Context {
@@ -71,7 +54,7 @@ impl Default for Aarch64Context {
             x: [0; 31],
             sp: 0,
             pc: 0,
-            pstate: 0x3c5, // Default PSTATE (EL0, interrupts enabled)
+            pstate: 0x3c5,
             #[cfg(feature = "full-fpu")]
             neon_state: [0; 32],
             #[cfg(feature = "full-fpu")]
@@ -85,88 +68,79 @@ impl Default for Aarch64Context {
 unsafe impl Send for Aarch64Context {}
 unsafe impl Sync for Aarch64Context {}
 
-/// Type alias for compatibility with other modules.
 pub type SavedContext = Aarch64Context;
 
 impl Arch for Aarch64Arch {
     type SavedContext = Aarch64Context;
 
     unsafe fn context_switch(prev: *mut Self::SavedContext, next: *const Self::SavedContext) {
-        // Use x16 (IP0) and x17 (IP1) as our base pointers.
-        // These are the intra-procedure-call scratch registers, perfect for trampolines.
+
         unsafe {
             asm!(
-                // Move input pointers to IP0/IP1
-                "mov x16, {prev}",            // x16 = prev context pointer
-                "mov x17, {next}",            // x17 = next context pointer
+                "mov x11, {prev}",
+                "mov x9, x11",
+                "mov x10, x12",
 
-                // === SAVE CURRENT CONTEXT to x16 ===
-                // Save SP and return address first
-                "mov x15, sp",                // use x15 as temp
-                "str x15, [x16, #248]",       // save sp
-                "adr x15, 1f",                // return address
-                "str x15, [x16, #256]",       // save pc
-                "mrs x15, nzcv",
-                "str x15, [x16, #264]",       // save pstate
+                "mov x11, sp",
+                "str x11, [x9, #248]",
+                "adr x11, 1f",
+                "str x11, [x9, #256]",
+                "mrs x11, nzcv",
+                "str x11, [x9, #264]",
 
-                // Save all general-purpose registers x0-x30
-                "stp x0, x1, [x16, #0]",
-                "stp x2, x3, [x16, #16]",
-                "stp x4, x5, [x16, #32]",
-                "stp x6, x7, [x16, #48]",
-                "stp x8, x9, [x16, #64]",
-                "stp x10, x11, [x16, #80]",
-                "stp x12, x13, [x16, #96]",
-                "stp x14, x15, [x16, #112]",
-                "stp x16, x17, [x16, #128]",  // save original x16, x17 (clobbered values OK)
-                "stp x18, x19, [x16, #144]",
-                "stp x20, x21, [x16, #160]",
-                "stp x22, x23, [x16, #176]",
-                "stp x24, x25, [x16, #192]",
-                "stp x26, x27, [x16, #208]",
-                "stp x28, x29, [x16, #224]",
-                "str x30, [x16, #240]",
+                "stp x0, x1, [x9, #0]",
+                "stp x2, x3, [x9, #16]",
+                "stp x4, x5, [x9, #32]",
+                "stp x6, x7, [x9, #48]",
+                "stp x8, x9, [x9, #64]",
+                "stp x10, x11, [x9, #80]",
+                "stp x12, x13, [x9, #96]",
+                "stp x14, x15, [x9, #112]",
+                "stp x16, x17, [x9, #128]",
+                "stp x18, x19, [x9, #144]",
+                "stp x20, x21, [x9, #160]",
+                "stp x22, x23, [x9, #176]",
+                "stp x24, x25, [x9, #192]",
+                "stp x26, x27, [x9, #208]",
+                "stp x28, x29, [x9, #224]",
+                "str x30, [x9, #240]",
 
-                // === LOAD NEW CONTEXT from x17 ===
-                // First restore SP and PSTATE
-                "ldr x15, [x17, #248]",       // load new sp
-                "mov sp, x15",
-                "ldr x15, [x17, #264]",       // load new pstate
-                "msr nzcv, x15",
-                "ldr x30, [x17, #256]",       // load new pc into link register
+                "ldr x11, [x10, #248]",
+                "mov sp, x11",
+                "ldr x11, [x10, #264]",
+                "msr nzcv, x11",
 
-                // Load all GP registers x0-x15, x18-x29
-                // Skip x16, x17 - we need x17 as base
-                "ldp x0, x1, [x17, #0]",
-                "ldp x2, x3, [x17, #16]",
-                "ldp x4, x5, [x17, #32]",
-                "ldp x6, x7, [x17, #48]",
-                "ldp x8, x9, [x17, #64]",
-                "ldp x10, x11, [x17, #80]",
-                "ldp x12, x13, [x17, #96]",
-                "ldp x14, x15, [x17, #112]",
-                // Skip x16, x17 for now
-                "ldp x18, x19, [x17, #144]",
-                "ldp x20, x21, [x17, #160]",
-                "ldp x22, x23, [x17, #176]",
-                "ldp x24, x25, [x17, #192]",
-                "ldp x26, x27, [x17, #208]",
-                "ldp x28, x29, [x17, #224]",
 
-                // Load x16, then x17 last (x17 is our base pointer)
-                "ldr x16, [x17, #128]",       // load x16
-                "ldr x17, [x17, #136]",       // load x17 (finally done with base)
+                "ldp x0, x1, [x10, #0]",
+                "ldp x2, x3, [x10, #16]",
+                "ldp x4, x5, [x10, #32]",
+                "ldp x6, x7, [x10, #48]",
+                "ldr x8, [x10, #64]",
+                "ldp x13, x14, [x10, #104]",
+                "ldr x15, [x10, #120]",
+                "ldp x16, x17, [x10, #128]",
+                "ldp x18, x19, [x10, #144]",
+                "ldp x20, x21, [x10, #160]",
+                "ldp x22, x23, [x10, #176]",
+                "ldp x24, x25, [x10, #192]",
+                "ldp x26, x27, [x10, #208]",
+                "ldp x28, x29, [x10, #224]",
+                "ldr x30, [x10, #240]",
 
-                // Jump to new context via link register
-                "ret",
+                "ldr x11, [x10, #256]",
+                "ldr x9, [x10, #72]",
+                "ldr x12, [x10, #96]",
+                "ldr x10, [x10, #80]",
 
-                "1:",                         // return point when switched back
+                "br x11",
+
+                "1:",
                 prev = in(reg) prev,
                 next = in(reg) next,
-                // x15-x17 are clobbered
-                out("x15") _,
-                out("x16") _,
-                out("x17") _,
+                out("x9") _,
+                out("x10") _,
+                out("x11") _,
+                out("x12") _,
             );
         }
     }
@@ -175,8 +149,7 @@ impl Arch for Aarch64Arch {
     unsafe fn save_fpu(ctx: &mut Self::SavedContext) {
         unsafe {
             asm!(
-                // Save NEON/FPU registers v0-v31
-                "stp q0, q1, [{ctx}, #272]",      // neon_state offset
+                "stp q0, q1, [{ctx}, #272]",
                 "stp q2, q3, [{ctx}, #304]",
                 "stp q4, q5, [{ctx}, #336]",
                 "stp q6, q7, [{ctx}, #368]",
@@ -192,12 +165,11 @@ impl Arch for Aarch64Arch {
                 "stp q26, q27, [{ctx}, #688]",
                 "stp q28, q29, [{ctx}, #720]",
                 "stp q30, q31, [{ctx}, #752]",
-                
-                // Save FPCR and FPSR
+
                 "mrs x0, fpcr",
-                "str w0, [{ctx}, #784]",          // fpcr offset  
-                "mrs x0, fpsr", 
-                "str w0, [{ctx}, #788]",          // fpsr offset
+                "str w0, [{ctx}, #784]",
+                "mrs x0, fpsr",
+                "str w0, [{ctx}, #788]",
                 ctx = in(reg) ctx,
                 lateout("x0") _,
                 options(nostack)
@@ -209,14 +181,12 @@ impl Arch for Aarch64Arch {
     unsafe fn restore_fpu(ctx: &Self::SavedContext) {
         unsafe {
             asm!(
-                // Restore FPCR and FPSR first
-                "ldr w0, [{ctx}, #784]",          // fpcr offset
+                "ldr w0, [{ctx}, #784]",
                 "msr fpcr, x0",
-                "ldr w0, [{ctx}, #788]",          // fpsr offset  
+                "ldr w0, [{ctx}, #788]",
                 "msr fpsr, x0",
-                
-                // Restore NEON/FPU registers v0-v31
-                "ldp q0, q1, [{ctx}, #272]",      // neon_state offset
+
+                "ldp q0, q1, [{ctx}, #272]",
                 "ldp q2, q3, [{ctx}, #304]",
                 "ldp q4, q5, [{ctx}, #336]",
                 "ldp q6, q7, [{ctx}, #368]",
@@ -242,7 +212,7 @@ impl Arch for Aarch64Arch {
     fn enable_interrupts() {
         unsafe {
             asm!(
-                "msr daifclr, #2",  // Clear IRQ mask (bit 1 of DAIF)
+                "msr daifclr, #2",
                 options(nomem, nostack)
             );
         }
@@ -251,7 +221,7 @@ impl Arch for Aarch64Arch {
     fn disable_interrupts() {
         unsafe {
             asm!(
-                "msr daifset, #2",  // Set IRQ mask (bit 1 of DAIF)
+                "msr daifset, #2",
                 options(nomem, nostack)
             );
         }
@@ -266,17 +236,14 @@ impl Arch for Aarch64Arch {
                 options(nostack, readonly)
             );
         }
-        (daif & 0x80) == 0  // IRQ bit (bit 7) is clear when interrupts enabled
+        (daif & 0x80) == 0
     }
 }
 
-// Timer frequency storage  
 static TIMER_FREQ: AtomicU64 = AtomicU64::new(0);
 
-/// Initialize AArch64-specific features.
 pub fn init() {
     unsafe {
-        // Read the timer frequency from CNTFRQ_EL0
         let freq: u64;
         asm!(
             "mrs {freq}, cntfrq_el0",
@@ -284,8 +251,7 @@ pub fn init() {
             options(nostack, readonly)
         );
         TIMER_FREQ.store(freq, Ordering::Relaxed);
-        
-        // Enable the generic timer (CNTP_CTL_EL0)
+
         asm!(
             "msr cntp_ctl_el0, {val}",
             val = in(reg) 1u64, // Enable timer (bit 0 = 1)
@@ -304,39 +270,34 @@ pub unsafe fn setup_preemption_timer(interval_us: u32) -> Result<(), &'static st
     if freq == 0 {
         return Err("Timer frequency not initialized");
     }
-    
-    // Calculate ticks for the desired interval
+
     let ticks = (freq * interval_us as u64) / 1_000_000;
-    
+
     unsafe {
-        // Read current timer value
         let current: u64;
         asm!(
             "mrs {current}, cntpct_el0",
             current = out(reg) current,
             options(nostack, readonly)
         );
-        
-        // Set compare value (current + interval)
+
         let compare_val = current + ticks;
         asm!(
             "msr cntp_cval_el0, {val}",
             val = in(reg) compare_val,
             options(nomem, nostack)
         );
-        
-        // Enable timer interrupt
+
         asm!(
             "msr cntp_ctl_el0, {val}",
             val = in(reg) 1u64, // Enable (bit 0) and unmask (bit 1 = 0)
             options(nomem, nostack)
         );
     }
-    
+
     Ok(())
 }
 
-/// Get current ARM64 timestamp counter value.
 pub fn get_timestamp() -> u64 {
     let count: u64;
     unsafe {
@@ -349,7 +310,6 @@ pub fn get_timestamp() -> u64 {
     count
 }
 
-/// Convert ARM64 timer ticks to nanoseconds.
 pub fn ticks_to_ns(ticks: u64) -> u64 {
     let freq = TIMER_FREQ.load(Ordering::Relaxed);
     if freq == 0 {
@@ -358,7 +318,6 @@ pub fn ticks_to_ns(ticks: u64) -> u64 {
     (ticks * 1_000_000_000) / freq
 }
 
-/// Convert nanoseconds to ARM64 timer ticks.
 pub fn ns_to_ticks(ns: u64) -> u64 {
     let freq = TIMER_FREQ.load(Ordering::Relaxed);
     if freq == 0 {
@@ -380,14 +339,12 @@ pub fn ns_to_ticks(ns: u64) -> u64 {
 /// IRQ_SAVE_CTX must have been set to the current thread's context.
 pub unsafe fn timer_interrupt_handler() {
     unsafe {
-        // Disable timer temporarily
         asm!(
             "msr cntp_ctl_el0, {val}",
-            val = in(reg) 2u64, // Disable (bit 0 = 0) and mask (bit 1 = 1)
+            val = in(reg) 2u64,
             options(nomem, nostack)
         );
 
-        // Get global kernel reference for scheduler decision
         use crate::arch::DefaultArch;
         use crate::sched::RoundRobinScheduler;
         use crate::kernel::get_global_kernel;
@@ -397,7 +354,6 @@ pub unsafe fn timer_interrupt_handler() {
             kernel.handle_irq_preemption();
         }
 
-        // Re-setup timer for next preemption (1ms default)
         let _ = setup_preemption_timer(1000);
     }
 }
@@ -412,7 +368,7 @@ pub unsafe fn timer_interrupt_handler() {
 /// The context pointer must remain valid as long as the thread could be interrupted.
 pub unsafe fn set_current_irq_context(ctx: *mut Aarch64Context) {
     IRQ_SAVE_CTX.store(ctx, Ordering::Release);
-    IRQ_LOAD_CTX.store(ctx, Ordering::Release);  // Default: return to same thread
+    IRQ_LOAD_CTX.store(ctx, Ordering::Release);
 }
 
 /// Update the load context pointer for IRQ return.
@@ -423,17 +379,14 @@ pub fn set_irq_load_context(ctx: *mut Aarch64Context) {
     IRQ_LOAD_CTX.store(ctx, Ordering::Release);
 }
 
-/// Get the current IRQ save context pointer.
 pub fn get_irq_save_context() -> *mut Aarch64Context {
     IRQ_SAVE_CTX.load(Ordering::Acquire)
 }
 
-/// Get the current IRQ load context pointer.
 pub fn get_irq_load_context() -> *mut Aarch64Context {
     IRQ_LOAD_CTX.load(Ordering::Acquire)
 }
 
-/// Memory barrier operations for ARM64.
 pub fn memory_barrier_full() {
     unsafe {
         asm!("dsb sy", options(nomem, nostack));
@@ -460,18 +413,17 @@ pub fn memory_barrier_release() {
 pub unsafe fn flush_dcache_range(start: *const u8, len: usize) {
     unsafe {
         let end = start.add(len);
-        let mut addr = start as usize & !63; // Align to cache line (64 bytes)
-        
+        let mut addr = start as usize & !63;
+
         while addr < end as usize {
             asm!(
                 "dc civac, {addr}",
                 addr = in(reg) addr,
                 options(nostack)
             );
-            addr += 64; // Next cache line
+            addr += 64;
         }
-        
-        // Data synchronization barrier
+
         asm!("dsb sy", options(nostack));
     }
 }
@@ -484,9 +436,9 @@ pub unsafe fn flush_dcache_range(start: *const u8, len: usize) {
 pub unsafe fn flush_icache() {
     unsafe {
         asm!(
-            "ic ialluis",  // Invalidate all instruction caches to PoU, Inner Shareable
-            "dsb ish",     // Data synchronization barrier
-            "isb",         // Instruction synchronization barrier
+            "ic ialluis",
+            "dsb ish",
+            "isb",
             options(nomem, nostack)
         );
     }

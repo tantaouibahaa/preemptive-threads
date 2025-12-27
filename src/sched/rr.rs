@@ -7,17 +7,9 @@ use core::ptr;
 extern crate alloc;
 use alloc::{boxed::Box, vec::Vec};
 
-/// Lock-free round-robin scheduler.
-///
-/// This scheduler maintains per-CPU run queues using lock-free ring buffers.
-/// Threads are scheduled in round-robin fashion with priority-based time slicing.
-/// Load balancing occurs when CPUs become idle or overloaded.
 pub struct RoundRobinScheduler {
-    /// Number of CPUs in the system
     num_cpus: usize,
-    /// Per-CPU run queues
     run_queues: Box<[CpuRunQueue]>,
-    /// Global statistics
     total_threads: AtomicUsize,
     runnable_threads: AtomicUsize,
 }
@@ -32,25 +24,18 @@ pub struct FirstComeFirstServeScheduler {
 
 /// Per-CPU run queue with priority levels.
 struct CpuRunQueue {
-    /// High priority queue (192-255)
     high_priority: LockFreeQueue,
-    /// Normal priority queue (64-191)
     normal_priority: LockFreeQueue,
-    /// Low priority queue (1-63)
     low_priority: LockFreeQueue,
-    /// Idle priority queue (0)
     idle_priority: LockFreeQueue,
-    /// Thread count for load balancing
     thread_count: AtomicUsize,
 }
 
-/// Lock-free MPMC queue implementation using Michael & Scott algorithm.
 struct LockFreeQueue {
     head: AtomicPtr<QueueNode>,
     tail: AtomicPtr<QueueNode>,
 }
 
-/// Queue node for lock-free linked list.
 struct QueueNode {
     thread: Option<ReadyRef>,
     next: AtomicPtr<QueueNode>,
@@ -58,12 +43,18 @@ struct QueueNode {
 
 impl Scheduler for FirstComeFirstServeScheduler {
     fn enqueue(&self, thread: ReadyRef) {
+        let tid = thread.id().get();
+        crate::pl011_println!("[FCFS] enqueue: thread {} (queue before: {:?})", tid, self.queue.debug_list_threads());
         self.queue.push(thread);
+        crate::pl011_println!("[FCFS] enqueue done: (queue after: {:?})", self.queue.debug_list_threads());
         self.runnable_threads.fetch_add(1, Ordering::AcqRel);
     }
 
     fn pick_next(&self, _cpu_id: CpuId) -> Option<ReadyRef> {
+        crate::pl011_println!("[FCFS] pick_next: (queue before: {:?})", self.queue.debug_list_threads());
         let thread = self.queue.try_pop()?;
+        let tid = thread.id().get();
+        crate::pl011_println!("[FCFS] pick_next: got thread {} (queue after: {:?})", tid, self.queue.debug_list_threads());
         self.runnable_threads.fetch_sub(1, Ordering::AcqRel);
         Some(thread)
     }
@@ -85,7 +76,7 @@ impl Scheduler for FirstComeFirstServeScheduler {
         self.enqueue(thread);
     }
     fn set_priority(&self, _thread_id: ThreadId, _priority: u8) {
-        // leaving this empty since this is FCFS
+        // later
     }
 
 }
@@ -118,7 +109,6 @@ impl RoundRobinScheduler {
         }
     }
 
-    /// Get the priority level for a thread priority value.
     fn priority_level(priority: u8) -> PriorityLevel {
         match priority {
             0 => PriorityLevel::Idle,
@@ -128,9 +118,6 @@ impl RoundRobinScheduler {
         }
     }
 
-    /// Select the best CPU for thread placement.
-    ///
-    /// Uses simple load balancing - find CPU with fewest threads.
     fn select_cpu(&self) -> CpuId {
         let mut best_cpu = 0;
         let mut min_threads = self.run_queues[0].thread_count.load(Ordering::Acquire);
@@ -146,9 +133,7 @@ impl RoundRobinScheduler {
         best_cpu
     }
 
-    /// Attempt work stealing from other CPUs.
     fn try_steal_work(&self, requesting_cpu: CpuId) -> Option<ReadyRef> {
-        // Start from a random CPU to avoid always stealing from CPU 0
         let start_cpu = (requesting_cpu + 1) % self.num_cpus;
 
         for i in 0..self.num_cpus {
@@ -159,13 +144,11 @@ impl RoundRobinScheduler {
 
             let victim_queue = &self.run_queues[victim_cpu];
 
-            // Try to steal from normal priority first (most likely to have work)
             if let Some(thread) = victim_queue.normal_priority.try_pop() {
                 victim_queue.thread_count.fetch_sub(1, Ordering::AcqRel);
                 return Some(thread);
             }
 
-            // Then try low priority
             if let Some(thread) = victim_queue.low_priority.try_pop() {
                 victim_queue.thread_count.fetch_sub(1, Ordering::AcqRel);
                 return Some(thread);
@@ -201,7 +184,6 @@ impl Scheduler for RoundRobinScheduler {
 
         let queue = &self.run_queues[cpu_id];
 
-        // Try priority queues in order: high -> normal -> low -> idle
         if let Some(thread) = queue.high_priority.try_pop() {
             queue.thread_count.fetch_sub(1, Ordering::AcqRel);
             self.runnable_threads.fetch_sub(1, Ordering::AcqRel);
@@ -226,7 +208,6 @@ impl Scheduler for RoundRobinScheduler {
             return Some(thread);
         }
 
-        // No local work, try work stealing
         if let Some(thread) = self.try_steal_work(cpu_id) {
             self.runnable_threads.fetch_sub(1, Ordering::AcqRel);
             return Some(thread);
@@ -236,23 +217,17 @@ impl Scheduler for RoundRobinScheduler {
     }
 
     fn on_tick(&self, current: &RunningRef) -> Option<ReadyRef> {
-        // Check if the current thread's time slice is expired
         if current.time_slice().should_preempt() {
-            // Convert running thread back to ready
             let ready = current.prepare_preemption();
 
-            // Find a higher priority thread to run instead
             let cpu_id = current.last_cpu();
 
-            // Only preempt if there's higher priority work available
             if cpu_id < self.num_cpus {
                 let queue = &self.run_queues[cpu_id];
                 let current_priority = current.priority();
 
-                // Check for higher priority threads
                 match Self::priority_level(current_priority) {
                     PriorityLevel::Idle => {
-                        // Idle can be preempted by anything
                         if queue.low_priority.peek().is_some()
                             || queue.normal_priority.peek().is_some()
                             || queue.high_priority.peek().is_some()
@@ -261,7 +236,6 @@ impl Scheduler for RoundRobinScheduler {
                         }
                     }
                     PriorityLevel::Low => {
-                        // Low can be preempted by normal/high
                         if queue.normal_priority.peek().is_some()
                             || queue.high_priority.peek().is_some()
                         {
@@ -269,14 +243,11 @@ impl Scheduler for RoundRobinScheduler {
                         }
                     }
                     PriorityLevel::Normal => {
-                        // Normal can be preempted by high
                         if queue.high_priority.peek().is_some() {
                             return Some(ready);
                         }
                     },
                     PriorityLevel::High => {
-                        // High priority threads run to completion of time slice
-                        // but can be preempted by other high priority threads
                         return Some(ready);
                     },
                 }
@@ -287,21 +258,15 @@ impl Scheduler for RoundRobinScheduler {
     }
 
     fn set_priority(&self, thread_id: ThreadId, priority: u8) {
-        // Priority changes take effect on next scheduling decision
-        // The thread's priority is stored in its ThreadRef, so this is a no-op
-        // for the scheduler data structures. The change will be visible when
-        // the thread is next enqueued.
         let _ = (thread_id, priority);
     }
 
     fn on_yield(&self, current: RunningRef) {
-        // Yielding threads go to the back of their priority queue
         let ready = current.stop_running();
         self.enqueue(ready);
     }
 
     fn on_block(&self, current: RunningRef) {
-        // Blocked threads are not enqueued - they wait for wake_up
         current.block();
     }
 
@@ -342,6 +307,33 @@ impl LockFreeQueue {
         }
     }
 
+    /// Warning: This is not atomic and may give inconsistent results under concurrency.
+    fn debug_count(&self) -> usize {
+        let mut count = 0;
+        let head = self.head.load(Ordering::Acquire);
+        let mut current = unsafe { (*head).next.load(Ordering::Acquire) };
+        while !current.is_null() {
+            count += 1;
+            current = unsafe { (*current).next.load(Ordering::Acquire) };
+        }
+        count
+    }
+
+    fn debug_list_threads(&self) -> alloc::vec::Vec<usize> {
+        let mut ids = alloc::vec::Vec::new();
+        let head = self.head.load(Ordering::Acquire);
+        let mut current = unsafe { (*head).next.load(Ordering::Acquire) };
+        while !current.is_null() {
+            if let Some(ref thread) = unsafe { &(*current).thread } {
+                ids.push(thread.id().get());
+            } else {
+                ids.push(0);
+            }
+            current = unsafe { (*current).next.load(Ordering::Acquire) };
+        }
+        ids
+    }
+
     fn push(&self, thread: ReadyRef) {
         let new_node = Box::into_raw(Box::new(QueueNode {
             thread: Some(thread),
@@ -352,36 +344,32 @@ impl LockFreeQueue {
             let tail = self.tail.load(Ordering::Acquire);
             let next = unsafe { (*tail).next.load(Ordering::Acquire) };
 
-            // Double-check that tail hasn't changed (ABA prevention)
+            //  (ABA prevention)
             if tail == self.tail.load(Ordering::Acquire) {
                 if next.is_null() {
-                    // Try to link new node at the end of the list
                     if unsafe { (*tail).next.compare_exchange_weak(
                         ptr::null_mut(),
                         new_node,
-                        Ordering::Release,  // Success: synchronizes with acquire in try_pop
-                        Ordering::Relaxed   // Failure: just retry
+                        Ordering::Release,
+                        Ordering::Relaxed
                     ).is_ok() } {
                         break;
                     }
                 } else {
-                    // Tail was lagging, try to advance it
                     let _ = self.tail.compare_exchange_weak(
                         tail,
                         next,
-                        Ordering::Release,  // Success: make new tail visible
-                        Ordering::Relaxed   // Failure: someone else advanced it
+                        Ordering::Release,
+                        Ordering::Relaxed
                     );
                 }
             }
         }
 
-        // Try to advance tail to point to the new node
-        // This may fail if another thread already advanced it, which is fine
         let _ = self.tail.compare_exchange_weak(
             self.tail.load(Ordering::Acquire),
             new_node,
-            Ordering::Release,  // Make the new tail visible to other threads
+            Ordering::Release,
             Ordering::Relaxed
         );
     }
@@ -392,42 +380,36 @@ impl LockFreeQueue {
             let tail = self.tail.load(Ordering::Acquire);
             let next = unsafe { (*head).next.load(Ordering::Acquire) };
 
-            // Double-check head consistency (ABA prevention)
+            // (ABA prevention)
             if head == self.head.load(Ordering::Acquire) {
                 if head == tail {
                     if next.is_null() {
-                        return None; // Queue is definitely empty
+                        return None;
                     }
-                    // Queue appears empty but tail is lagging, help advance tail
                     let _ = self.tail.compare_exchange_weak(
                         tail,
                         next,
-                        Ordering::Release,  // Make tail advancement visible
+                        Ordering::Release,  /
                         Ordering::Relaxed
                     );
                 } else {
                     if next.is_null() {
-                        continue; // Inconsistent state, retry
+                        continue;
                     }
 
-                    // Speculatively read the thread from next node
-                    // This must be done before the CAS to avoid races
                     let thread = unsafe { (*next).thread.take() };
 
-                    // Try to advance head to next node
                     if self.head.compare_exchange_weak(
                         head,
                         next,
-                        Ordering::Release,  // Success: make new head visible
-                        Ordering::Relaxed   // Failure: retry
+                        Ordering::Release,
+                        Ordering::Relaxed
                     ).is_ok() {
-                        // Successfully advanced head, safe to free old head
                         unsafe {
                             drop(Box::from_raw(head));
                         }
                         return thread;
                     } else {
-                        // CAS failed, put thread back (if we got one)
                         if let Some(t) = thread {
                             unsafe {
                                 (*next).thread = Some(t);
@@ -474,6 +456,10 @@ enum PriorityLevel {
 
 unsafe impl Send for RoundRobinScheduler {}
 unsafe impl Sync for RoundRobinScheduler {}
+
+
+unsafe impl Send for FirstComeFirstServeScheduler {}
+unsafe impl Sync for FirstComeFirstServeScheduler {}
 
 #[cfg(test)]
 mod tests {

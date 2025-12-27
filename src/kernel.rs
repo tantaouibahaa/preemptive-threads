@@ -11,7 +11,6 @@ use core::marker::PhantomData;
 use portable_atomic::{AtomicBool, AtomicUsize, AtomicPtr, Ordering};
 use alloc::boxed::Box;
 
-/// Global kernel reference for interrupt handlers.
 static GLOBAL_KERNEL: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 
 /// Main kernel handle that manages the threading system.
@@ -24,17 +23,11 @@ static GLOBAL_KERNEL: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 /// * `A` - Architecture implementation
 /// * `S` - Scheduler implementation
 pub struct Kernel<A: Arch, S: Scheduler> {
-    /// Scheduler instance
     scheduler: S,
-    /// Stack pool for thread allocation
     stack_pool: StackPool,
-    /// Architecture marker (zero-sized)
     _arch: PhantomData<A>,
-    /// Whether the kernel has been initialized
     initialized: AtomicBool,
-    /// Next thread ID to assign
     next_thread_id: AtomicUsize,
-    /// Currently running thread on each CPU (simplified to single CPU for now)
     current_thread: spin::Mutex<Option<RunningRef>>,
 }
 
@@ -54,7 +47,7 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
             stack_pool: StackPool::new(),
             _arch: PhantomData,
             initialized: AtomicBool::new(false),
-            next_thread_id: AtomicUsize::new(1), // Start from 1, never use 0
+            next_thread_id: AtomicUsize::new(1),
             current_thread: spin::Mutex::new(None),
         }
     }
@@ -73,26 +66,18 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
         {
-            // Architecture initialization is handled by boot code
-            // (aarch64_boot.rs calls init() on GIC and timer)
             Ok(())
         } else {
-            Err(()) // Already initialized
+            Err(())
         }
     }
 
-    /// Check if the kernel has been initialized.
     pub fn is_initialized(&self) -> bool {
         self.initialized.load(Ordering::Acquire)
     }
 
-    /// Generate a new unique thread ID.
-    ///
-    /// Thread IDs are never reused and are guaranteed to be unique
-    /// for the lifetime of the kernel instance.
     pub fn next_thread_id(&self) -> ThreadId {
         let id = self.next_thread_id.fetch_add(1, Ordering::AcqRel);
-        // Safety: We start from 1 and only increment, so this will never be zero
         unsafe { ThreadId::new_unchecked(id) }
     }
 
@@ -101,16 +86,7 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
         &self.scheduler
     }
 
-    /// Spawn a new thread.
-    ///
-    /// # Arguments
-    ///
-    /// * `entry_point` - Closure to run in the new thread
-    /// * `priority` - Thread priority (0-255, higher = more important)
-    ///
-    /// # Returns
-    ///
-    /// JoinHandle for the newly created thread, or an error if creation fails.
+
     pub fn spawn<F>(&self, entry_point: F, priority: u8) -> Result<JoinHandle, SpawnError>
     where
         F: FnOnce() + Send + 'static,
@@ -119,38 +95,28 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
             return Err(SpawnError::NotInitialized);
         }
 
-        // Allocate stack
         let stack = self
             .stack_pool
             .allocate(StackSizeClass::Medium)
             .ok_or(SpawnError::OutOfMemory)?;
 
-        // Generate unique thread ID
         let thread_id = self.next_thread_id();
 
-        // Box the closure to move it to the heap
         let closure_box = Box::new(entry_point);
         let closure_ptr = Box::into_raw(closure_box);
 
-        // Create trampoline that will call the closure
-        // The trampoline is a fn() that we'll set up in the context
         fn thread_trampoline<F: FnOnce() + Send + 'static>(closure_ptr: *mut F) {
-            // Enable interrupts - this is the first code that runs in a new thread
-            // context_switch uses ret, not eret, so PSTATE isn't restored.
-            // We need to explicitly enable interrupts here.
             #[cfg(target_arch = "aarch64")]
             unsafe {
                 core::arch::asm!(
-                    "msr daifclr, #2",  // Clear IRQ mask
+                    "msr daifclr, #2",
                     options(nomem, nostack)
                 );
             }
 
-            // Reconstruct the boxed closure and call it
             let closure = unsafe { Box::from_raw(closure_ptr) };
             closure();
 
-            // Thread finished - just loop forever with interrupts enabled
             // Preemption will handle scheduling other threads
             #[allow(clippy::empty_loop)]
             loop {
@@ -158,29 +124,22 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
                 unsafe {
                     core::arch::asm!("wfe", options(nomem, nostack));
                 }
-                // On non-aarch64 (std-shim testing), hint to pause
                 #[cfg(not(target_arch = "aarch64"))]
                 core::hint::spin_loop();
             }
         }
 
-        // Get the stack bottom (top of stack memory, since stack grows down)
         let stack_bottom = stack.stack_bottom();
 
-        // Create thread with the trampoline as entry point
-        // We'll pass closure_ptr via the thread's context (x0 register on ARM64)
-        let entry_fn: fn() = || {};  // Placeholder - actual entry is set up in context
-
+        let entry_fn: fn() = || {};
         let (thread, join_handle) = Thread::new(thread_id, stack, entry_fn, priority);
 
-        // Set up the initial context to start at the trampoline with closure_ptr as arg
         thread.setup_initial_context(
             thread_trampoline::<F> as *const () as usize,
             stack_bottom as usize,
             closure_ptr as usize,
         );
 
-        // Convert to ReadyRef and enqueue in scheduler
         let ready_ref = ReadyRef(thread);
         self.scheduler.enqueue(ready_ref);
 
@@ -205,7 +164,6 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
 
         let (thread, join_handle) = Thread::new(thread_id, stack, entry_point, priority);
 
-        // Set up context with entry point (no argument needed for fn())
         thread.setup_initial_context(entry_point as usize, stack_bottom as usize, 0);
 
         let ready_ref = ReadyRef(thread);
@@ -214,46 +172,57 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
         Ok(join_handle)
     }
 
-    /// Yield the current thread, allowing other threads to run.
+    #[inline(never)]
     pub fn yield_now(&self) {
         if !self.is_initialized() {
             return;
         }
 
-        // Disable interrupts during scheduling decision
         A::disable_interrupts();
 
         let mut current_guard = self.current_thread.lock();
 
         if let Some(current) = current_guard.take() {
-            // Get current thread's context pointer before converting
+            let prev_id = current.id().get();
             let prev_ctx = current.0.context_ptr();
 
-            // Current thread is yielding voluntarily - convert back to ready
+            let current_sp: u64;
+            unsafe { core::arch::asm!("mov {}, sp", out(reg) current_sp); }
+            crate::pl011_println!("[DEBUG] T{} yielding, actual SP={:#x}, ctx_addr={:#x}",
+                prev_id, current_sp, prev_ctx as usize);
+
             let ready = current.stop_running();
             self.scheduler.enqueue(ready);
 
-            // Try to pick next thread to run
             if let Some(next) = self.scheduler.pick_next(0) {
+                let next_id = next.id().get();
                 let next_ctx = next.0.context_ptr();
+                crate::pl011_println!("[YIELD] {} -> {}: next_ctx_addr={:#x}",
+                    prev_id, next_id, next_ctx as usize);
+                let next_pc = unsafe { (*next_ctx).pc };
+                let next_sp = unsafe { (*next_ctx).sp };
+                let next_x30 = unsafe { (*next_ctx).x[30] };
+                crate::pl011_println!("        next_pc={:#x}, next_sp={:#x}, next_x30={:#x}",
+                    next_pc, next_sp, next_x30);
                 let running = next.start_running();
                 *current_guard = Some(running);
-                drop(current_guard); // Release lock before context switch
+                drop(current_guard);
 
-                // Re-enable interrupts and perform context switch
-                A::enable_interrupts();
 
                 if !prev_ctx.is_null() && !next_ctx.is_null() {
                     unsafe {
-                        // Cast to the correct type - safe because we only target RPi Zero 2 W
                         A::context_switch(
                             prev_ctx as *mut A::SavedContext,
                             next_ctx as *const A::SavedContext,
                         );
                     }
+                    A::enable_interrupts();
+                    let my_saved_sp = unsafe { (*prev_ctx).sp };
+                    crate::pl011_println!("[RESUMED] saved_sp in my ctx = {:#x}", my_saved_sp);
+                } else {
+                    A::enable_interrupts();
                 }
             } else {
-                // No other threads, re-enable interrupts
                 A::enable_interrupts();
             }
         } else {
@@ -269,18 +238,17 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
     ///
     /// Note: This function handles interrupt enabling internally - do NOT enable
     /// interrupts before calling this function.
+    #[inline(never)]
     pub fn start_first_thread(&self) {
         if !self.is_initialized() {
             return;
         }
 
-        // Ensure interrupts are disabled during setup
         A::disable_interrupts();
 
         let mut current_guard = self.current_thread.lock();
 
         if current_guard.is_some() {
-            // Already have a running thread
             A::enable_interrupts();
             return;
         }
@@ -292,7 +260,6 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
             *current_guard = Some(running);
             drop(current_guard);
 
-            // Set up IRQ context pointers so interrupts save/restore to this thread
             #[cfg(target_arch = "aarch64")]
             unsafe {
                 crate::arch::aarch64::set_current_irq_context(
@@ -300,14 +267,9 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
                 );
             }
 
-            // Note: We do NOT enable interrupts here. The thread trampoline will
-            // enable them after we context_switch into the first thread. This
-            // prevents an IRQ from firing before the context switch completes.
 
-            // Jump to the first thread (no previous context to save)
             if !next_ctx.is_null() {
                 unsafe {
-                    // Create a dummy context for "from" since we're not returning
                     let mut dummy_ctx = A::SavedContext::default();
                     A::context_switch(
                         &mut dummy_ctx as *mut A::SavedContext,
@@ -333,33 +295,27 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
             return;
         }
 
-        // Try to get the lock - if we can't, another CPU is scheduling
         let mut current_guard = match self.current_thread.try_lock() {
             Some(guard) => guard,
-            None => return, // Lock contention, skip this tick
+            None => return,
         };
 
         if let Some(ref _current) = *current_guard {
-            // Always preempt on timer interrupt for now (force round-robin)
             // TODO: Restore time slice checking once debugging is complete
             let should_switch = true; // current.should_preempt();
             if should_switch {
-                // Take current thread out
                 if let Some(current) = current_guard.take() {
                     let prev_ctx = current.0.context_ptr();
 
-                    // Convert to ready and enqueue
                     let ready = current.stop_running();
                     self.scheduler.enqueue(ready);
 
-                    // Pick next thread (could be same thread if no others)
                     if let Some(next) = self.scheduler.pick_next(0) {
                         let next_ctx = next.0.context_ptr();
                         let running = next.start_running();
                         *current_guard = Some(running);
                         drop(current_guard);
 
-                        // Context switch to next thread
                         if !prev_ctx.is_null() && !next_ctx.is_null() {
                             unsafe {
                                 A::context_switch(
@@ -372,14 +328,12 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
                 }
             }
         } else {
-            // No current thread, try to schedule one
             if let Some(next) = self.scheduler.pick_next(0) {
                 let next_ctx = next.0.context_ptr();
                 let running = next.start_running();
                 *current_guard = Some(running);
                 drop(current_guard);
 
-                // Jump to the thread
                 if !next_ctx.is_null() {
                     unsafe {
                         let mut dummy_ctx = A::SavedContext::default();
@@ -410,29 +364,23 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
             return;
         }
 
-        // Try to get the lock - if we can't, another CPU is scheduling
         let mut current_guard = match self.current_thread.try_lock() {
             Some(guard) => guard,
-            None => return, // Lock contention, skip this tick
+            None => return,
         };
 
         if let Some(ref _current) = *current_guard {
-            // Always preempt on timer interrupt for now (force round-robin)
             let should_switch = true;
 
             if should_switch {
-                // Take current thread out
                 if let Some(current) = current_guard.take() {
-                    // Current thread's context was saved by IRQ handler to IRQ_SAVE_CTX
-                    // which points to this thread's context structure
+
 
                     let old_id = current.id().get();
 
-                    // Convert to ready and enqueue
                     let ready = current.stop_running();
                     self.scheduler.enqueue(ready);
 
-                    // Pick next thread
                     if let Some(next) = self.scheduler.pick_next(0) {
                         let next_ctx = next.0.context_ptr();
                         let _old_id = old_id; // Suppress unused warning
@@ -442,14 +390,10 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
                         *current_guard = Some(running);
                         drop(current_guard);
 
-                        // Update IRQ context pointers for the new thread
-                        // - IRQ_LOAD_CTX: IRQ handler will load from here when returning
-                        // - IRQ_SAVE_CTX: Next interrupt will save here
                         if !next_ctx.is_null() {
                             crate::arch::aarch64::set_irq_load_context(
                                 next_ctx as *mut crate::arch::aarch64::Aarch64Context
                             );
-                            // Also update SAVE for next interrupt
                             unsafe {
                                 crate::arch::aarch64::set_current_irq_context(
                                     next_ctx as *mut crate::arch::aarch64::Aarch64Context
@@ -457,28 +401,19 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
                             }
                         }
                     } else {
-                        // No other thread to run, stay with current (re-enqueue it)
                         drop(current_guard);
                     }
                 }
             }
         } else {
-            // No current thread (shouldn't happen if start_first_thread was called)
             drop(current_guard);
         }
     }
 
-    /// Get current thread statistics.
     pub fn thread_stats(&self) -> (usize, usize, usize) {
         self.scheduler.stats()
     }
 
-    /// Register this kernel as the global kernel for interrupt handlers.
-    ///
-    /// # Safety
-    ///
-    /// The kernel must outlive all interrupt handling (i.e., for the lifetime
-    /// of the system).
     pub unsafe fn register_global(&'static self) {
         GLOBAL_KERNEL.store(self as *const _ as *mut (), Ordering::Release);
     }
@@ -487,17 +422,12 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
 /// Errors that can occur when spawning threads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpawnError {
-    /// Kernel has not been initialized
     NotInitialized,
-    /// Out of memory for stack allocation
     OutOfMemory,
-    /// Maximum number of threads reached
     TooManyThreads,
-    /// Invalid stack size
     InvalidStackSize,
 }
 
-// Safety: Kernel can be shared between threads as long as the scheduler is thread-safe
 unsafe impl<A: Arch, S: Scheduler> Send for Kernel<A, S> {}
 unsafe impl<A: Arch, S: Scheduler> Sync for Kernel<A, S> {}
 
