@@ -1,8 +1,4 @@
-//! Hazard pointers for safe memory reclamation in lock-free data structures.
-//!
-//! Hazard pointers are an alternative to epoch-based reclamation that provides
-//! fine-grained protection for specific memory locations. Each thread can
-//! protect a small number of pointers from being reclaimed by other threads.
+
 
 use portable_atomic::{AtomicPtr, AtomicUsize, Ordering};
 use core::ptr::{self, NonNull};
@@ -25,9 +21,7 @@ static mut HAZARD_REGISTRY: HazardRegistry = HazardRegistry::new();
 
 /// Global registry of hazard pointers for all threads.
 struct HazardRegistry {
-    /// Hazard pointer records for each thread
     thread_records: [ThreadRecord; MAX_THREADS],
-    /// Next available thread ID
     next_thread_id: AtomicUsize,
 }
 
@@ -88,13 +82,9 @@ impl HazardRegistry {
 
 /// Per-thread hazard pointer record.
 struct ThreadRecord {
-    /// Thread ID for this record
     thread_id: AtomicUsize,
-    /// Whether this thread record is active
     active: AtomicBool,
-    /// Hazard pointers for this thread
     hazards: [AtomicPtr<u8>; HAZARDS_PER_THREAD],
-    /// Retired pointers waiting for reclamation
     retired_list: spin::Mutex<Vec<RetiredPointer>>,
 }
 
@@ -158,11 +148,8 @@ impl ThreadRecord {
 
 /// A retired pointer waiting for reclamation.
 struct RetiredPointer {
-    /// Pointer to the memory to be freed
     ptr: NonNull<u8>,
-    /// Size of the memory block
     size: usize,
-    /// Alignment of the memory block
     align: usize,
 }
 
@@ -174,9 +161,7 @@ unsafe impl Sync for RetiredPointer {}
 /// While this hazard pointer is active, the protected memory location
 /// will not be reclaimed by other threads.
 pub struct HazardPointer {
-    /// Thread record this hazard pointer belongs to
     thread_record: &'static ThreadRecord,
-    /// Index of this hazard pointer in the thread record
     hazard_index: usize,
 }
 

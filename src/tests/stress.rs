@@ -2,7 +2,7 @@
 
 #[cfg(test)]
 mod stress_tests {
-    use crate::thread_new::ThreadBuilder;
+    use crate::thread::ThreadBuilder;
     use crate::sync::{Channel, Mutex, RwLock};
     use crate::tests::TEST_CONFIG;
     use portable_atomic::{AtomicU64, AtomicBool, AtomicUsize, Ordering};

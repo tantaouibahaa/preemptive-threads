@@ -2,7 +2,7 @@
 
 #[cfg(test)]
 mod thread_tests {
-    use crate::thread_new::{Thread, ThreadBuilder, ThreadState};
+    use crate::thread::{Thread, ThreadBuilder, ThreadState};
     use crate::errors::ThreadError;
     use crate::mem::{StackSizeClass, StackPool};
     use portable_atomic::{AtomicU64, Ordering};
@@ -61,7 +61,7 @@ mod thread_tests {
         
         // Priority should be clamped to MAX_PRIORITY
         thread.set_priority(255);
-        assert_eq!(thread.priority(), crate::thread_new::MAX_PRIORITY);
+        assert_eq!(thread.priority(), crate::thread::MAX_PRIORITY);
     }
     
     #[test]
@@ -174,7 +174,7 @@ mod stack_tests {
 #[cfg(test)]
 mod scheduler_tests {
     use crate::sched::{Scheduler, SchedulerType};
-    use crate::thread_new::{Thread, ThreadState};
+    use crate::thread::{Thread, ThreadState};
     use portable_atomic::{AtomicU64, AtomicBool, Ordering};
     use alloc::sync::Arc;
     

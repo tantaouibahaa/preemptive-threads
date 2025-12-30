@@ -2,7 +2,7 @@
 
 #[cfg(test)]
 mod property_tests {
-    use crate::thread_new::ThreadBuilder;
+    use crate::thread::ThreadBuilder;
     use crate::sync::{Channel, Mutex, RwLock};
     use crate::mem::{StackPool, StackSizeClass, ArcLite};
     use crate::sched::{Scheduler, SchedulerType};
@@ -47,7 +47,7 @@ mod property_tests {
         for _ in 0..thread_count {
             let handle = ThreadBuilder::new()
                 .spawn(|| {
-                    crate::thread_new::current_thread_id()
+                    crate::thread::current_thread_id()
                 })
                 .expect("Failed to spawn thread");
             handles.push(handle);
@@ -106,7 +106,7 @@ mod property_tests {
         
         // Create test threads
         for i in 0..thread_count {
-            let thread = Arc::new(crate::thread_new::Thread::new_test_thread());
+            let thread = Arc::new(crate::thread::Thread::new_test_thread());
             thread.set_priority(5); // Same priority for fairness test
             threads.push(thread.clone());
             scheduler.schedule(thread);
@@ -402,7 +402,7 @@ mod property_tests {
         let mut expected_order = Vec::new();
         for i in 0..thread_count {
             let priority = rng.gen_range(1, 11) as u8;
-            let thread = Arc::new(crate::thread_new::Thread::new_test_thread());
+            let thread = Arc::new(crate::thread::Thread::new_test_thread());
             thread.set_priority(priority);
             
             scheduler.schedule(thread.clone());

@@ -1,6 +1,6 @@
 //! Scheduler trait definition for the new lock-free scheduler architecture.
 
-use crate::thread_new::{ReadyRef, RunningRef, ThreadId};
+use crate::thread::{ReadyRef, RunningRef, ThreadId};
 
 /// CPU identifier type.
 pub type CpuId = usize;

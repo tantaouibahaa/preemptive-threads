@@ -2,7 +2,7 @@
 
 #[cfg(test)]
 mod performance_tests {
-    use crate::thread_new::ThreadBuilder;
+    use crate::thread::ThreadBuilder;
     use crate::sync::{Channel, Mutex};
     use crate::mem::{StackPool, StackSizeClass};
     use crate::time::{get_monotonic_time, Duration};

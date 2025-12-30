@@ -1,7 +1,7 @@
 //! Round-robin scheduler implementation with lock-free queues.
 
 use super::trait_def::{CpuId, Scheduler};
-use crate::thread_new::{ReadyRef, RunningRef, ThreadId};
+use crate::thread::{ReadyRef, RunningRef, ThreadId};
 use portable_atomic::{AtomicPtr, AtomicUsize, Ordering};
 use core::ptr;
 extern crate alloc;

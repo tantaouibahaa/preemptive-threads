@@ -2,7 +2,7 @@
 
 #[cfg(test)]
 mod lifecycle_tests {
-    use crate::thread_new::{ThreadBuilder, ThreadState};
+    use crate::thread::{ThreadBuilder, ThreadState};
     use crate::kernel::ThreadingKernel;
     use crate::observability::GLOBAL_METRICS;
     use portable_atomic::{AtomicU64, AtomicBool, Ordering};
@@ -238,7 +238,7 @@ mod lifecycle_tests {
 
 #[cfg(test)]
 mod error_handling_tests {
-    use crate::thread_new::ThreadBuilder;
+    use crate::thread::ThreadBuilder;
     use crate::errors::{ThreadError, SpawnError};
     use crate::mem::StackSizeClass;
     

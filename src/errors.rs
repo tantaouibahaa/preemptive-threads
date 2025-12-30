@@ -1,7 +1,4 @@
-//! Comprehensive error handling for the threading system.
-//!
-//! This module provides detailed error types for all threading operations,
-//! enabling proper error handling and debugging throughout the system.
+
 
 #![allow(clippy::uninlined_format_args)]
 
@@ -12,51 +9,30 @@ use alloc::string::String;
 /// Result type for threading operations.
 pub type ThreadResult<T> = Result<T, ThreadError>;
 
-/// Comprehensive error type for all threading operations.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ThreadError {
-    /// Thread spawning errors
     Spawn(SpawnError),
-    /// Thread joining errors  
     Join(JoinError),
-    /// Scheduling errors
     Schedule(ScheduleError),
-    /// Memory allocation errors
     Memory(MemoryError),
-    /// Timer and timing errors
     Timer(TimerError),
-    /// Architecture-specific errors
     Arch(ArchError),
-    /// Thread-local storage errors
     Tls(TlsError),
-    /// Permission and security errors
     Permission(PermissionError),
-    /// Resource limit errors
     Resource(ResourceError),
-    /// Invalid operation errors
     InvalidOperation(InvalidOperationError),
 }
 
-/// Errors that can occur during thread spawning.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SpawnError {
-    /// System is not initialized
     NotInitialized,
-    /// Out of memory for stack allocation
     OutOfMemory,
-    /// Maximum number of threads reached
     TooManyThreads,
-    /// Invalid stack size specified
     InvalidStackSize(usize),
-    /// Invalid priority specified
     InvalidPriority(u8),
-    /// Invalid CPU affinity specified
     InvalidAffinity(u64),
-    /// Thread name is invalid or too long
     InvalidName(String),
-    /// Architecture does not support requested feature
     UnsupportedFeature(String),
-    /// Scheduler rejected the thread
     SchedulerRejected,
 }
 
@@ -424,17 +400,7 @@ impl From<InvalidOperationError> for ThreadError {
     }
 }
 
-// Convert from old SpawnError to new system
-impl From<crate::kernel::SpawnError> for SpawnError {
-    fn from(error: crate::kernel::SpawnError) -> Self {
-        match error {
-            crate::kernel::SpawnError::NotInitialized => SpawnError::NotInitialized,
-            crate::kernel::SpawnError::OutOfMemory => SpawnError::OutOfMemory,
-            crate::kernel::SpawnError::TooManyThreads => SpawnError::TooManyThreads,
-            crate::kernel::SpawnError::InvalidStackSize => SpawnError::InvalidStackSize(0),
-        }
-    }
-}
+
 
 impl From<crate::time::TimerError> for TimerError {
     fn from(error: crate::time::TimerError) -> Self {

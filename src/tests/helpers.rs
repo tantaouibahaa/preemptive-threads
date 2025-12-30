@@ -1,7 +1,7 @@
 //! Test helper utilities and common functionality.
 
 #[cfg(test)]
-use crate::thread_new::{Thread, ThreadId};
+use crate::thread::{Thread, ThreadId};
 #[cfg(test)]
 use crate::kernel::ThreadingKernel;
 #[cfg(test)]

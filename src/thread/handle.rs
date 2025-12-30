@@ -1,31 +1,14 @@
-//! Join handle implementation for waiting on thread completion.
+
 
 use super::{ThreadInner, ThreadState};
 use crate::mem::ArcLite;
 
-/// A handle that can be used to wait for a thread to complete.
-///
-/// This handle allows the caller to wait for a thread to finish execution
-/// and retrieve any result. When dropped, it does not affect the thread's
-/// execution - only the ability to join it.
 pub struct JoinHandle {
-    /// Reference to the thread's internal data
     pub(super) inner: ArcLite<ThreadInner>,
 }
 
 impl JoinHandle {
-    /// Wait for the thread to complete.
-    ///
-    /// This function blocks until the associated thread has finished
-    /// execution. If the thread has already finished, this returns
-    /// immediately.
-    ///
-    /// # Returns
-    ///
-    /// `Ok(())` when the thread completes successfully, or `Err(())` 
-    /// if the thread panicked or could not be joined.
     pub fn join(self) -> Result<(), ()> {
-        // Wait for the thread to finish
         loop {
             let state = self.inner.state.load(portable_atomic::Ordering::Acquire);
             if state == ThreadState::Finished as u8 {
@@ -37,54 +20,38 @@ impl JoinHandle {
             crate::yield_now();
         }
 
-        // Check if we have a result
         if let Some(join_result) = self.inner.join_result.try_lock() {
             if join_result.is_some() {
                 Ok(())
             } else {
-                Err(()) // Thread panicked or failed
+                Err(())
             }
         } else {
-            Err(()) // Could not acquire lock
+            Err(())
         }
     }
     
-    /// Check if the thread has finished without blocking.
-    ///
-    /// # Returns
-    ///
-    /// `Some(Ok(()))` if the thread has finished successfully,
-    /// `Some(Err(()))` if the thread panicked, or `None` if the
-    /// thread is still running.
     pub fn try_join(&self) -> Option<Result<(), ()>> {
         let state = self.inner.state.load(portable_atomic::Ordering::Acquire);
         if state == ThreadState::Finished as u8 {
-            // Thread has finished, check the result
             if let Some(join_result) = self.inner.join_result.try_lock() {
                 if join_result.is_some() {
                     Some(Ok(()))
                 } else {
-                    Some(Err(())) // Thread panicked or failed
+                    Some(Err(()))
                 }
             } else {
-                Some(Err(())) // Could not acquire lock
+                Some(Err(()))
             }
         } else {
-            None // Thread still running
+            None
         }
     }
     
-    /// Get the ID of the thread this handle refers to.
     pub fn thread_id(&self) -> super::ThreadId {
         self.inner.id
     }
     
-    /// Check if the associated thread is still alive.
-    ///
-    /// # Returns
-    ///
-    /// `true` if the thread is still running or ready to run,
-    /// `false` if it has finished or been terminated.
     pub fn is_alive(&self) -> bool {
         let state = self.inner.state.load(portable_atomic::Ordering::Acquire);
         state != ThreadState::Finished as u8
@@ -97,7 +64,7 @@ unsafe impl Sync for JoinHandle {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::thread_new::{Thread, ThreadId};
+    use crate::thread::{Thread, ThreadId};
     use crate::mem::{StackPool, StackSizeClass};
     
     #[cfg(feature = "std-shim")]

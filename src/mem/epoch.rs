@@ -1,8 +1,4 @@
-//! Epoch-based reclamation for safe memory management in lock-free data structures.
-//!
-//! This module provides epoch-based reclamation (EBR), a technique for safe memory
-//! reclamation in lock-free data structures. It allows threads to safely reclaim
-//! memory that is no longer reachable, even in the presence of concurrent readers.
+
 
 use portable_atomic::{AtomicUsize, AtomicPtr, Ordering};
 use core::ptr::{self, NonNull};
@@ -26,13 +22,9 @@ static mut LOCAL_EPOCHS: [LocalEpoch; MAX_THREADS] = [const { LocalEpoch::new() 
 /// Thread-local epoch state.
 #[derive(Debug)]
 pub struct LocalEpoch {
-    /// Current epoch for this thread
     epoch: AtomicUsize,
-    /// Whether this thread is currently in a critical section
     in_critical_section: AtomicBool,
-    /// Thread ID for this local epoch
     thread_id: AtomicUsize,
-    /// Garbage lists for each epoch
     garbage_lists: [spin::Mutex<Vec<GarbageItem>>; EPOCH_COUNT],
 }
 
@@ -52,13 +44,11 @@ impl LocalEpoch {
 }
 
 /// An item in the garbage collection list.
+
 #[derive(Debug)]
 struct GarbageItem {
-    /// Pointer to the memory to be freed
     ptr: NonNull<u8>,
-    /// Size of the memory block
     size: usize,
-    /// Alignment of the memory block
     align: usize,
 }
 
@@ -71,9 +61,7 @@ unsafe impl Sync for GarbageItem {}
 /// reclamation. Memory that is marked for deletion will not be reclaimed
 /// until all guards from the current epoch are dropped.
 pub struct Guard {
-    /// Thread ID this guard belongs to
     thread_id: usize,
-    /// Epoch when this guard was created
     epoch: usize,
 }
 
@@ -310,14 +298,10 @@ impl<T> Atomic<T> {
         self.ptr.load(order)
     }
     
-    /// Store a new pointer with the given memory ordering.
-    ///
-    /// The previous pointer will be safely reclaimed using epoch-based reclamation.
     pub fn store(&self, ptr: *mut T, order: Ordering) {
         let old_ptr = self.ptr.swap(ptr, order);
         
         if !old_ptr.is_null() {
-            // Defer destruction of the old pointer
             let guard = Guard::current();
             unsafe {
                 guard.defer_destroy(old_ptr);

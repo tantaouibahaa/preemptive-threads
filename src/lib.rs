@@ -54,7 +54,7 @@ pub mod kernel;
 pub mod mem;
 pub mod platform_timer;
 pub mod sched;
-pub mod thread_new;
+pub mod thread;
 pub mod time;
 
 #[cfg(test)]
@@ -90,13 +90,13 @@ fn panic(_info: &PanicInfo) -> ! {
 pub use arch::{Arch, DefaultArch};
 
 // Kernel
-pub use kernel::{Kernel, SpawnError};
+pub use kernel::Kernel;
 
 // Scheduler
 pub use sched::{RoundRobinScheduler, Scheduler};
 
 // Threads
-pub use thread_new::{JoinHandle, Thread, ThreadBuilder, ThreadId, ThreadState};
+pub use thread::{JoinHandle, Thread, ThreadBuilder, ThreadId, ThreadState};
 
 // Memory management
 pub use mem::{Stack, StackPool, StackSizeClass};
@@ -105,7 +105,7 @@ pub use mem::{Stack, StackPool, StackSizeClass};
 pub use time::{Duration, Instant};
 
 // Errors
-pub use errors::{ThreadError, ThreadResult};
+pub use errors::{ThreadError, ThreadResult, SpawnError};
 
 // ============================================================================
 // Convenience Functions

@@ -1,7 +1,7 @@
 //! Work-stealing scheduler implementation with lock-free deques.
 
 use super::trait_def::{Scheduler, CpuId};
-use crate::thread_new::{ReadyRef, RunningRef, ThreadId};
+use crate::thread::{ReadyRef, RunningRef, ThreadId};
 use portable_atomic::{AtomicUsize, AtomicPtr, AtomicIsize, Ordering};
 use core::ptr;
 extern crate alloc;

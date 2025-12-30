@@ -1,27 +1,16 @@
-//! Kernel abstraction for managing the threading system.
-//!
-//! This module provides the main `Kernel` struct that coordinates all
-//! threading operations for the Raspberry Pi Zero 2 W.
+
 
 use crate::arch::Arch;
 use crate::sched::Scheduler;
-use crate::thread_new::{JoinHandle, ReadyRef, RunningRef, Thread, ThreadId};
+use crate::thread::{JoinHandle, ReadyRef, RunningRef, Thread, ThreadId};
 use crate::mem::{StackPool, StackSizeClass};
+use crate::errors::SpawnError;
 use core::marker::PhantomData;
 use portable_atomic::{AtomicBool, AtomicUsize, AtomicPtr, Ordering};
 use alloc::boxed::Box;
 
 static GLOBAL_KERNEL: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 
-/// Main kernel handle that manages the threading system.
-///
-/// This struct coordinates all threading operations and provides a safe
-/// interface to the underlying scheduler and architecture abstractions.
-///
-/// # Type Parameters
-///
-/// * `A` - Architecture implementation
-/// * `S` - Scheduler implementation
 pub struct Kernel<A: Arch, S: Scheduler> {
     scheduler: S,
     stack_pool: StackPool,
@@ -32,15 +21,6 @@ pub struct Kernel<A: Arch, S: Scheduler> {
 }
 
 impl<A: Arch, S: Scheduler> Kernel<A, S> {
-    /// Create a new kernel instance.
-    ///
-    /// # Arguments
-    ///
-    /// * `scheduler` - Scheduler implementation to use
-    ///
-    /// # Returns
-    ///
-    /// A new kernel instance ready for initialization.
     pub const fn new(scheduler: S) -> Self {
         Self {
             scheduler,
@@ -52,14 +32,6 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
         }
     }
 
-    /// Initialize the kernel.
-    ///
-    /// This must be called before any threading operations can be performed.
-    /// It sets up architecture-specific features and prepares the scheduler.
-    ///
-    /// # Returns
-    ///
-    /// `Ok(())` if initialization succeeds, `Err(())` if already initialized.
     pub fn init(&self) -> Result<(), ()> {
         if self
             .initialized
@@ -422,14 +394,7 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
     }
 }
 
-/// Errors that can occur when spawning threads.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SpawnError {
-    NotInitialized,
-    OutOfMemory,
-    TooManyThreads,
-    InvalidStackSize,
-}
+
 
 unsafe impl<A: Arch, S: Scheduler> Send for Kernel<A, S> {}
 unsafe impl<A: Arch, S: Scheduler> Sync for Kernel<A, S> {}
