@@ -104,7 +104,7 @@ mod allocator {
 
 /// The kernel instance.
 static KERNEL: Lazy<Kernel<DefaultArch, FirstComeFirstServeScheduler>> =
-    Lazy::new(|| Kernel::new(FirstComeFirstServeScheduler::new(1)));
+    Lazy::new(|| Kernel::new(FirstComeFirstServeScheduler::new()));
 
 /// Kernel entry point - called from boot code after hardware init.
 #[no_mangle]
