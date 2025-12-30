@@ -116,8 +116,7 @@ pub mod aarch64;
 #[path = "aarch64_stub.rs"]
 pub mod aarch64;
 
-pub mod barriers;
-pub mod detection;
+
 
 // RPi Zero 2 W specific hardware support
 #[cfg(target_arch = "aarch64")]
@@ -126,8 +125,6 @@ pub mod aarch64_gic;
 pub mod aarch64_vectors;
 #[cfg(target_arch = "aarch64")]
 pub mod aarch64_boot;
-#[cfg(target_arch = "aarch64")]
-pub mod uart;
 #[cfg(target_arch = "aarch64")]
 pub mod uart_pl011;
 

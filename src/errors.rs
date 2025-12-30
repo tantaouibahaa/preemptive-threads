@@ -15,7 +15,7 @@ pub enum ThreadError {
     Join(JoinError),
     Schedule(ScheduleError),
     Memory(MemoryError),
-    Timer(TimerError),
+
     Arch(ArchError),
     Tls(TlsError),
     Permission(PermissionError),
@@ -89,22 +89,6 @@ pub enum MemoryError {
     InvalidLayout,
 }
 
-/// Timer and timing related errors.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TimerError {
-    /// Timer not initialized
-    NotInitialized,
-    /// Timer already running
-    AlreadyRunning,
-    /// Timer not running
-    NotRunning,
-    /// Invalid timer frequency
-    InvalidFrequency(u32),
-    /// Timer hardware not available
-    HardwareNotAvailable,
-    /// Invalid timer configuration
-    InvalidConfig,
-}
 
 /// Architecture-specific errors.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -196,7 +180,6 @@ impl fmt::Display for ThreadError {
             ThreadError::Join(e) => write!(f, "Thread join error: {}", e),
             ThreadError::Schedule(e) => write!(f, "Scheduling error: {}", e),
             ThreadError::Memory(e) => write!(f, "Memory error: {}", e),
-            ThreadError::Timer(e) => write!(f, "Timer error: {}", e),
             ThreadError::Arch(e) => write!(f, "Architecture error: {}", e),
             ThreadError::Tls(e) => write!(f, "Thread-local storage error: {}", e),
             ThreadError::Permission(e) => write!(f, "Permission error: {}", e),
@@ -262,18 +245,7 @@ impl fmt::Display for MemoryError {
     }
 }
 
-impl fmt::Display for TimerError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            TimerError::NotInitialized => write!(f, "Timer not initialized"),
-            TimerError::AlreadyRunning => write!(f, "Timer already running"),
-            TimerError::NotRunning => write!(f, "Timer not running"),
-            TimerError::InvalidFrequency(freq) => write!(f, "Invalid timer frequency: {} Hz", freq),
-            TimerError::HardwareNotAvailable => write!(f, "Timer hardware not available"),
-            TimerError::InvalidConfig => write!(f, "Invalid timer configuration"),
-        }
-    }
-}
+
 
 impl fmt::Display for ArchError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -364,11 +336,7 @@ impl From<MemoryError> for ThreadError {
     }
 }
 
-impl From<TimerError> for ThreadError {
-    fn from(error: TimerError) -> Self {
-        ThreadError::Timer(error)
-    }
-}
+
 
 impl From<ArchError> for ThreadError {
     fn from(error: ArchError) -> Self {
@@ -402,18 +370,7 @@ impl From<InvalidOperationError> for ThreadError {
 
 
 
-impl From<crate::time::TimerError> for TimerError {
-    fn from(error: crate::time::TimerError) -> Self {
-        match error {
-            crate::time::TimerError::NotInitialized => TimerError::NotInitialized,
-            crate::time::TimerError::AlreadyRunning => TimerError::AlreadyRunning,
-            crate::time::TimerError::NotRunning => TimerError::NotRunning,
-            crate::time::TimerError::UnsupportedFrequency => TimerError::InvalidFrequency(0),
-            crate::time::TimerError::InvalidConfig => TimerError::InvalidConfig,
-            crate::time::TimerError::NotAvailable => TimerError::HardwareNotAvailable,
-        }
-    }
-}
+
 
 // Convenience constructors for common error patterns
 impl ThreadError {
