@@ -120,3 +120,8 @@ pub use errors::{ThreadError, ThreadResult, SpawnError};
 pub fn yield_now() {
     kernel::yield_current();
 }
+
+#[inline]
+pub fn finish_current() {
+    kernel::finish_current();
+}
