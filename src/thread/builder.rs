@@ -1,4 +1,4 @@
-//! Thread builder for configuring thread creation.
+
 
 use super::{Thread, JoinHandle, ThreadId};
 use crate::mem::{StackPool, StackSizeClass};
@@ -7,68 +7,38 @@ use crate::time::Duration;
 extern crate alloc;
 use alloc::string::String;
 
-/// Builder for configuring and creating new threads.
-///
-/// This provides a comprehensive interface for setting thread parameters
-/// before spawning, with advanced options for scheduling, debugging, and resource management.
 pub struct ThreadBuilder {
-    /// Stack size class to use
     stack_size_class: Option<StackSizeClass>,
-    /// Custom stack size in bytes
     custom_stack_size: Option<usize>,
-    /// Thread priority (0-255, higher = more important)
     priority: u8,
-    /// Thread name (for debugging and profiling)
     name: Option<String>,
-    /// CPU affinity mask (bitfield of allowed CPUs)
     cpu_affinity: Option<u64>,
-    /// Thread group ID for resource accounting
     group_id: Option<u32>,
-    /// Whether to enable stack guard pages
     stack_guard_pages: bool,
-    /// Whether to enable stack canary protection
     stack_canary: bool,
-    /// Custom stack canary value
     custom_canary: Option<u64>,
-    /// Time slice duration override
     time_slice: Option<Duration>,
-    /// Whether this thread is critical (affects scheduling)
     critical: bool,
-    /// Whether this thread can be preempted
     preemptible: bool,
-    /// Thread-local storage size reservation
     tls_size: Option<usize>,
-    /// Whether to enable detailed debugging info
     debug_info: bool,
-    /// Custom thread attributes
     attributes: ThreadAttributes,
 }
 
-/// Custom thread attributes for advanced configuration.
 #[derive(Debug, Clone)]
 pub struct ThreadAttributes {
-    /// Real-time scheduling parameters
     rt_priority: Option<u8>,
-    /// Nice value for process priority
     nice_value: i8,
-    /// Whether to inherit parent's signal mask
     inherit_signal_mask: bool,
-    /// Custom environment variables
     environment: Option<alloc::collections::BTreeMap<String, String>>,
-    /// Resource limits
     limits: ResourceLimits,
 }
 
-/// Resource limits for threads.
 #[derive(Debug, Clone, Default)]
 pub struct ResourceLimits {
-    /// Maximum CPU time (in nanoseconds)
     max_cpu_time: Option<u64>,
-    /// Maximum memory usage (in bytes)
     max_memory: Option<usize>,
-    /// Maximum number of file descriptors
     max_files: Option<u32>,
-    /// Maximum number of child threads
     max_children: Option<u32>,
 }
 

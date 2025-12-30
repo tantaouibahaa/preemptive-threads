@@ -1,5 +1,3 @@
-//! Round-robin scheduler implementation with lock-free queues.
-
 use super::trait_def::{CpuId, Scheduler};
 use crate::thread::{ReadyRef, RunningRef, ThreadId};
 use portable_atomic::{AtomicPtr, AtomicUsize, Ordering};
@@ -20,8 +18,7 @@ pub struct FirstComeFirstServeScheduler {
     runnable_threads: AtomicUsize,
 }
 
-/// Per-CPU run queue with priority levels.
-struct CpuRunQueue {
+pub struct CpuRunQueue {
     high_priority: LockFreeQueue,
     normal_priority: LockFreeQueue,
     low_priority: LockFreeQueue,
@@ -73,9 +70,7 @@ impl Scheduler for FirstComeFirstServeScheduler {
     fn wake_up(&self, thread: ReadyRef) {
         self.enqueue(thread);
     }
-    fn set_priority(&self, _thread_id: ThreadId, _priority: u8) {
-        // later
-    }
+    fn set_priority(&self, _thread_id: ThreadId, _priority: u8) {}
 
 }
 impl FirstComeFirstServeScheduler {
@@ -253,9 +248,7 @@ impl Scheduler for RoundRobinScheduler {
         None
     }
 
-    fn set_priority(&self, thread_id: ThreadId, priority: u8) {
-        let _ = (thread_id, priority);
-    }
+    fn set_priority(&self, _thread_id: ThreadId, _priority: u8) {}
 
     fn on_yield(&self, current: RunningRef) {
         let ready = current.stop_running();

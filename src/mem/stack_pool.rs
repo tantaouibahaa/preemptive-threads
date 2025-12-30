@@ -3,8 +3,7 @@
 //! This module provides a pool-based allocator for thread stacks with
 //! different size classes and optional guard page support.
 
-const GUARD_PAGE_SIZE: usize = 4096;
-const USE_GUARD_PAGES: bool = false;
+
 
 use portable_atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
@@ -98,7 +97,7 @@ impl Stack {
         let mut sp = unsafe {
             self.memory.as_ptr().add(
                 if self.has_guard_pages {
-                    GUARD_PAGE_SIZE + self.usable_size
+                    4096 + self.usable_size
                 } else {
                     self.usable_size
                 }
@@ -279,7 +278,7 @@ impl StackPool {
             extern crate std;
             use std::alloc::{alloc, Layout};
 
-            let total_size = usable_size + if USE_GUARD_PAGES { GUARD_PAGE_SIZE } else { 0 };
+            let total_size = usable_size;
             let layout = Layout::from_size_align(total_size, 4096).ok()?;
             let memory = unsafe { alloc(layout) };
 
@@ -293,7 +292,7 @@ impl StackPool {
                 memory,
                 usable_size,
                 size_class,
-                has_guard_pages: USE_GUARD_PAGES,
+                has_guard_pages: false,
             };
 
 

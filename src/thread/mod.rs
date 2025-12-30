@@ -1,7 +1,4 @@
-//! New thread abstraction with RAII and memory safety.
-//!
-//! This module provides the new thread implementation that uses RAII
-//! for resource management and eliminates manual memory management.
+
 
 use crate::arch::Arch;
 use crate::mem::{ArcLite, Stack};
@@ -13,7 +10,6 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 
 pub mod handle;
-pub mod inner;
 pub mod builder;
 
 pub use handle::JoinHandle;
@@ -21,15 +17,11 @@ pub use builder::ThreadBuilder;
 
 static CURRENT_THREAD_ID: portable_atomic::AtomicU64 = portable_atomic::AtomicU64::new(1);
 
-/// Get current thread ID (placeholder implementation).
 pub fn current_thread_id() -> ThreadId {
     let id = CURRENT_THREAD_ID.load(portable_atomic::Ordering::Relaxed);
     ThreadId::new(id)
 }
 
-/// Unique identifier for threads.
-///
-/// Thread IDs are never reused and are guaranteed to be non-zero.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ThreadId(core::num::NonZeroUsize);
 
@@ -70,27 +62,16 @@ impl ThreadId {
     }
 }
 
-/// Thread execution state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum ThreadState {
-    /// Thread is ready to run
     Ready = 0,
-    /// Thread is currently running
     Running = 1,
-    /// Thread is blocked waiting for something
     Blocked = 2,
-    /// Thread has finished execution
     Finished = 3,
 }
 
-/// Main thread handle with RAII resource management.
-///
-/// This represents a thread and automatically manages its resources
-/// through reference counting. When the last reference is dropped,
-/// the thread's stack and other resources are automatically cleaned up.
 pub struct Thread {
-    /// Reference to the thread's internal data
     inner: ArcLite<ThreadInner>,
 }
 
