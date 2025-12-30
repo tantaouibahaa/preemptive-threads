@@ -25,23 +25,17 @@ use core::arch::naked_asm;
 /// Exception context saved on the stack during exception handling.
 #[repr(C)]
 pub struct ExceptionContext {
-    /// General purpose registers x0-x30
     pub x: [u64; 31],
-    /// Exception Link Register (return address)
     pub elr: u64,
-    /// Saved Program Status Register
     pub spsr: u64,
-    /// Exception Syndrome Register
     pub esr: u64,
-    /// Fault Address Register
     pub far: u64,
 }
 
-/// Vector table entry macro - each entry must be exactly 128 bytes.
 macro_rules! vector_entry {
     ($handler:ident) => {
         concat!(
-            ".align 7\n",         // 128-byte alignment
+            ".align 7\n",
             "b ", stringify!($handler), "\n",
         )
     };
@@ -119,14 +113,11 @@ unsafe extern "C" fn serror_el1t() {
     naked_asm!("b .");
 }
 
-// Exception handlers - Current EL with SPx (main kernel mode)
 #[cfg(target_arch = "aarch64")]
 #[no_mangle]
 #[unsafe(naked)]
 unsafe extern "C" fn sync_el1h() {
-    // Synchronous exception - could be SVC, data abort, etc.
     naked_asm!(
-        // Save all registers
         "sub sp, sp, #272",
         "stp x0, x1, [sp, #0]",
         "stp x2, x3, [sp, #16]",
@@ -145,7 +136,6 @@ unsafe extern "C" fn sync_el1h() {
         "stp x28, x29, [sp, #224]",
         "str x30, [sp, #240]",
 
-        // Save exception registers
         "mrs x0, elr_el1",
         "mrs x1, spsr_el1",
         "mrs x2, esr_el1",
@@ -153,11 +143,9 @@ unsafe extern "C" fn sync_el1h() {
         "stp x0, x1, [sp, #248]",
         "stp x2, x3, [sp, #264]",
 
-        // Call handler with context pointer
         "mov x0, sp",
         "bl sync_exception_handler",
 
-        // Restore registers and return
         "ldp x0, x1, [sp, #248]",
         "msr elr_el1, x0",
         "msr spsr_el1, x1",
@@ -215,38 +203,30 @@ unsafe extern "C" fn irq_el1h() {
         "mrs x1, spsr_el1",
         "stp x0, x1, [sp, #48]",   // Save ELR, SPSR
 
-        // x0 = original SP (before our sub)
         "add x0, sp, #64",
 
-        // Switch to IRQ stack
         "adrp x29, {irq_stack}",
         "add x29, x29, :lo12:{irq_stack}",
         "add x29, x29, #4096",
-        "mov x2, sp",              // x2 = thread stack (with our saves)
-        "mov sp, x29",             // Switch to IRQ stack
+        "mov x2, sp",
+        "mov sp, x29",
 
-        // Load IRQ_SAVE_CTX into x29
         "adrp x29, {irq_save_ctx}",
         "add x29, x29, :lo12:{irq_save_ctx}",
         "ldr x29, [x29]",
 
-        // If null, skip to handler
         "cbz x29, 2f",
 
-        // Save all registers to context. x0 = original SP, x2 = thread stack ptr
-        // Load original x0, x1 from thread stack and save to context
-        "ldp x3, x1, [x2, #0]",    // x3 = original x0, x1 = original x1 (wait, we swapped)
-        // Actually [x2, #0] has x0, [x2, #8] has x1
-        "ldr x3, [x2, #0]",        // x3 = original x0
-        "str x3, [x29, #0]",       // Save to context
-        "ldr x3, [x2, #8]",        // x3 = original x1
+        "ldp x3, x1, [x2, #0]",
+        "ldr x3, [x2, #0]",
+        "str x3, [x29, #0]",
+        "ldr x3, [x2, #8]",
         "str x3, [x29, #8]",
-        "ldr x3, [x2, #16]",       // x3 = original x2
+        "ldr x3, [x2, #16]",
         "str x3, [x29, #16]",
-        "ldr x3, [x2, #24]",       // x3 = original x3
+        "ldr x3, [x2, #24]",
         "str x3, [x29, #24]",
 
-        // x4-x28 haven't been modified, save directly
         "stp x4, x5, [x29, #32]",
         "stp x6, x7, [x29, #48]",
         "stp x8, x9, [x29, #64]",
@@ -261,43 +241,33 @@ unsafe extern "C" fn irq_el1h() {
         "stp x26, x27, [x29, #208]",
         "str x28, [x29, #224]",
 
-        // Load original x29, x30 from thread stack
         "ldp x3, x1, [x2, #32]",   // x3 = original x29, x1 = original x30
         "str x3, [x29, #232]",     // Save x29
         "str x1, [x29, #240]",     // Save x30
 
-        // Save original SP (in x0)
         "str x0, [x29, #248]",
 
-        // Save ELR, SPSR from thread stack
         "ldp x3, x1, [x2, #48]",
         "str x3, [x29, #256]",     // PC = ELR
         "str x1, [x29, #264]",     // pstate = SPSR
 
-        // === PHASE 2: Call high-level IRQ handler ===
         "2:",
         "bl irq_handler",
 
-        // === PHASE 3: Load context from IRQ_LOAD_CTX ===
         "adrp x29, {irq_load_ctx}",
         "add x29, x29, :lo12:{irq_load_ctx}",
         "ldr x29, [x29]",
 
-        // If null, panic (we should always have a context to return to)
         "cbz x29, 3f",
 
-        // Load SPSR and ELR first
         "ldr x0, [x29, #264]",
         "msr spsr_el1, x0",
         "ldr x0, [x29, #256]",
         "msr elr_el1, x0",
 
-        // Load SP - switch to thread's stack
         "ldr x0, [x29, #248]",
         "mov sp, x0",
 
-        // Load all GP registers
-        // x0-x27 first
         "ldp x0, x1, [x29, #0]",
         "ldp x2, x3, [x29, #16]",
         "ldp x4, x5, [x29, #32]",
@@ -315,12 +285,10 @@ unsafe extern "C" fn irq_el1h() {
         "ldr x28, [x29, #224]",
         "ldr x30, [x29, #240]",
 
-        // Finally load x29 (must be last since it's our base pointer)
         "ldr x29, [x29, #232]",
 
         "eret",
 
-        // Null context - shouldn't happen, infinite loop
         "3:",
         "b .",
 
@@ -334,17 +302,16 @@ unsafe extern "C" fn irq_el1h() {
 #[no_mangle]
 #[unsafe(naked)]
 unsafe extern "C" fn fiq_el1h() {
-    naked_asm!("b ."); // Hang on FIQ (not used)
+    naked_asm!("b .");
 }
 
 #[cfg(target_arch = "aarch64")]
 #[no_mangle]
 #[unsafe(naked)]
 unsafe extern "C" fn serror_el1h() {
-    naked_asm!("b ."); // Hang on SError
+    naked_asm!("b .");
 }
 
-// Lower EL handlers (not used in bare-metal single-EL setup)
 #[cfg(target_arch = "aarch64")]
 #[no_mangle]
 #[unsafe(naked)]
@@ -401,18 +368,15 @@ unsafe extern "C" fn serror_el0_32() {
     naked_asm!("b .");
 }
 
-/// Synchronous exception handler (called from assembly).
 #[no_mangle]
 extern "C" fn sync_exception_handler(ctx: *mut ExceptionContext) {
     let ctx = unsafe { &*ctx };
 
-    // Read exception syndrome to determine cause
     let esr = ctx.esr;
-    let ec = (esr >> 26) & 0x3F; // Exception Class
+    let ec = (esr >> 26) & 0x3F;
 
     match ec {
         0b010101 => {
-            // SVC from AArch64 - system call (not implemented yet)
         }
         0b100000 | 0b100001 => {
             // Instruction abort
@@ -431,23 +395,20 @@ extern "C" fn sync_exception_handler(ctx: *mut ExceptionContext) {
     }
 }
 
-/// IRQ handler - dispatches to appropriate interrupt handler.
 #[no_mangle]
 extern "C" fn irq_handler() {
     #[cfg(target_arch = "aarch64")]
     {
         use super::aarch64_gic::{Gic400, TIMER_IRQ, SPURIOUS_IRQ};
 
-        // Acknowledge the interrupt
         let irq = unsafe { Gic400::acknowledge_interrupt() };
 
         if irq == SPURIOUS_IRQ {
-            return; // Spurious interrupt, ignore
+            return;
         }
 
         match irq {
             TIMER_IRQ => {
-                // Timer interrupt - handle preemption
                 timer_interrupt_handler();
             }
             _ => {
@@ -455,7 +416,6 @@ extern "C" fn irq_handler() {
             }
         }
 
-        // Signal end of interrupt
         unsafe { Gic400::end_interrupt(irq); }
     }
 }
@@ -464,7 +424,6 @@ extern "C" fn irq_handler() {
 fn timer_interrupt_handler() {
     #[cfg(target_arch = "aarch64")]
     {
-        // Call the aarch64 timer handler which invokes the kernel scheduler
         unsafe {
             super::aarch64::timer_interrupt_handler();
         }
