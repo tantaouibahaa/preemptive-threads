@@ -2,11 +2,10 @@
 
 use crate::arch::Arch;
 use crate::mem::{ArcLite, Stack};
-use crate::time::{Duration, Instant, TimeSlice};
-use portable_atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
+use crate::time::{Instant, TimeSlice};
+use portable_atomic::{AtomicU8, Ordering};
 
 extern crate alloc;
-use alloc::collections::BTreeMap;
 use alloc::string::String;
 
 pub mod handle;
@@ -77,49 +76,15 @@ pub struct Thread {
 
 /// Internal thread data shared between Thread and JoinHandle.
 pub struct ThreadInner {
-    /// Unique thread identifier
     pub id: ThreadId,
-    /// Current execution state
     pub state: AtomicU8,
-    /// Thread priority (higher = more important)
     pub priority: AtomicU8,
-    /// Thread's stack
     pub stack: Option<Stack>,
-    /// Architecture-specific saved context (owned by the thread)
     pub context: spin::Mutex<<crate::arch::DefaultArch as Arch>::SavedContext>,
-    /// Entry point function (simplified for now)
     pub entry_point: Option<fn()>,
-    /// Join result storage
-    pub join_result: spin::Mutex<Option<()>>, // TODO: Support return values
-    /// Time slice tracking for scheduling
+    pub join_result: spin::Mutex<Option<()>>,
     pub time_slice: TimeSlice,
-    /// Thread name for debugging
     pub name: spin::Mutex<Option<String>>,
-    /// CPU affinity mask
-    pub cpu_affinity: AtomicU64,
-    /// Thread group ID
-    pub group_id: AtomicU64,
-    /// Whether this thread is critical
-    pub critical: AtomicBool,
-    /// Whether this thread can be preempted
-    pub preemptible: AtomicBool,
-    /// Reserved TLS size
-    pub tls_size: AtomicUsize,
-    /// Debug info enabled
-    pub debug_info: AtomicBool,
-    /// Real-time priority
-    pub rt_priority: AtomicU8,
-    /// Nice value
-    pub nice_value: portable_atomic::AtomicI8,
-    /// Inherit signal mask
-    pub inherit_signal_mask: AtomicBool,
-    /// Environment variables
-    pub environment: spin::Mutex<Option<BTreeMap<String, String>>>,
-    /// Resource limits
-    pub max_cpu_time: AtomicU64,
-    pub max_memory: AtomicUsize,
-    pub max_files: AtomicU64,
-    pub max_children: AtomicU64,
 }
 
 impl Thread {
@@ -146,26 +111,11 @@ impl Thread {
             state: AtomicU8::new(ThreadState::Ready as u8),
             priority: AtomicU8::new(priority),
             stack: Some(stack),
-            #[allow(clippy::unit_arg)]
-            context: spin::Mutex::new(Default::default()), // Initialize with default context
+            context: spin::Mutex::new(Default::default()),
             entry_point: Some(entry_point),
             join_result: spin::Mutex::new(None),
             time_slice: TimeSlice::new(priority),
             name: spin::Mutex::new(None),
-            cpu_affinity: AtomicU64::new(0), // 0 means no affinity
-            group_id: AtomicU64::new(0),
-            critical: AtomicBool::new(false),
-            preemptible: AtomicBool::new(true),
-            tls_size: AtomicUsize::new(0),
-            debug_info: AtomicBool::new(cfg!(debug_assertions)),
-            rt_priority: AtomicU8::new(0),
-            nice_value: portable_atomic::AtomicI8::new(0),
-            inherit_signal_mask: AtomicBool::new(true),
-            environment: spin::Mutex::new(None),
-            max_cpu_time: AtomicU64::new(0), // 0 means no limit
-            max_memory: AtomicUsize::new(0),
-            max_files: AtomicU64::new(0),
-            max_children: AtomicU64::new(0),
         };
 
         let inner_arc = ArcLite::new(inner);
@@ -351,153 +301,6 @@ impl Thread {
     /// Get the thread name.
     pub fn name(&self) -> Option<String> {
         self.inner.name.try_lock().and_then(|name| name.clone())
-    }
-
-    /// Set CPU affinity mask.
-    pub fn set_cpu_affinity(&self, affinity: u64) {
-        self.inner.cpu_affinity.store(affinity, Ordering::Release);
-    }
-
-    /// Get CPU affinity mask.
-    pub fn cpu_affinity(&self) -> u64 {
-        self.inner.cpu_affinity.load(Ordering::Acquire)
-    }
-
-    /// Set thread group ID.
-    pub fn set_group_id(&self, group_id: u32) {
-        self.inner.group_id.store(group_id as u64, Ordering::Release);
-    }
-
-    /// Get thread group ID.
-    pub fn group_id(&self) -> u32 {
-        self.inner.group_id.load(Ordering::Acquire) as u32
-    }
-
-    /// Set custom time slice duration.
-    pub fn set_time_slice(&self, duration: Duration) {
-        self.inner.time_slice.set_custom_duration(duration);
-    }
-
-    /// Set whether this thread is critical.
-    pub fn set_critical(&self, critical: bool) {
-        self.inner.critical.store(critical, Ordering::Release);
-    }
-
-    /// Check if this thread is critical.
-    pub fn is_critical(&self) -> bool {
-        self.inner.critical.load(Ordering::Acquire)
-    }
-
-    /// Set whether this thread can be preempted.
-    pub fn set_preemptible(&self, preemptible: bool) {
-        self.inner.preemptible.store(preemptible, Ordering::Release);
-    }
-
-    /// Check if this thread can be preempted.
-    pub fn is_preemptible(&self) -> bool {
-        self.inner.preemptible.load(Ordering::Acquire)
-    }
-
-    /// Reserve thread-local storage space.
-    pub fn reserve_tls(&self, size: usize) {
-        self.inner.tls_size.store(size, Ordering::Release);
-    }
-
-    /// Get reserved TLS size.
-    pub fn tls_size(&self) -> usize {
-        self.inner.tls_size.load(Ordering::Acquire)
-    }
-
-    /// Enable or disable debug information.
-    pub fn set_debug_info(&self, enabled: bool) {
-        self.inner.debug_info.store(enabled, Ordering::Release);
-    }
-
-    /// Check if debug information is enabled.
-    pub fn debug_info_enabled(&self) -> bool {
-        self.inner.debug_info.load(Ordering::Acquire)
-    }
-
-    /// Set real-time priority.
-    pub fn set_realtime_priority(&self, rt_priority: u8) {
-        self.inner.rt_priority.store(rt_priority, Ordering::Release);
-    }
-
-    /// Get real-time priority.
-    pub fn realtime_priority(&self) -> u8 {
-        self.inner.rt_priority.load(Ordering::Acquire)
-    }
-
-    /// Set nice value for process priority.
-    pub fn set_nice_value(&self, nice: i8) {
-        self.inner.nice_value.store(nice, Ordering::Release);
-    }
-
-    /// Get nice value.
-    pub fn nice_value(&self) -> i8 {
-        self.inner.nice_value.load(Ordering::Acquire)
-    }
-
-    /// Set whether to inherit parent's signal mask.
-    pub fn set_inherit_signal_mask(&self, inherit: bool) {
-        self.inner.inherit_signal_mask.store(inherit, Ordering::Release);
-    }
-
-    /// Check if inheriting parent's signal mask.
-    pub fn inherits_signal_mask(&self) -> bool {
-        self.inner.inherit_signal_mask.load(Ordering::Acquire)
-    }
-
-    /// Set custom environment variables.
-    pub fn set_environment(&self, env: BTreeMap<String, String>) {
-        if let Some(mut environment) = self.inner.environment.try_lock() {
-            *environment = Some(env);
-        }
-    }
-
-    /// Get environment variables.
-    pub fn environment(&self) -> Option<BTreeMap<String, String>> {
-        self.inner.environment.try_lock().and_then(|env| env.clone())
-    }
-
-    /// Set maximum CPU time limit.
-    pub fn set_max_cpu_time(&self, max_time: u64) {
-        self.inner.max_cpu_time.store(max_time, Ordering::Release);
-    }
-
-    /// Get maximum CPU time limit.
-    pub fn max_cpu_time(&self) -> u64 {
-        self.inner.max_cpu_time.load(Ordering::Acquire)
-    }
-
-    /// Set maximum memory usage limit.
-    pub fn set_max_memory(&self, max_memory: usize) {
-        self.inner.max_memory.store(max_memory, Ordering::Release);
-    }
-
-    /// Get maximum memory usage limit.
-    pub fn max_memory(&self) -> usize {
-        self.inner.max_memory.load(Ordering::Acquire)
-    }
-
-    /// Set maximum file descriptors limit.
-    pub fn set_max_files(&self, max_files: u32) {
-        self.inner.max_files.store(max_files as u64, Ordering::Release);
-    }
-
-    /// Get maximum file descriptors limit.
-    pub fn max_files(&self) -> u32 {
-        self.inner.max_files.load(Ordering::Acquire) as u32
-    }
-
-    /// Set maximum child threads limit.
-    pub fn set_max_children(&self, max_children: u32) {
-        self.inner.max_children.store(max_children as u64, Ordering::Release);
-    }
-
-    /// Get maximum child threads limit.
-    pub fn max_children(&self) -> u32 {
-        self.inner.max_children.load(Ordering::Acquire) as u32
     }
 }
 
