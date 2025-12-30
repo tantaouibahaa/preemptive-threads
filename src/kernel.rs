@@ -78,26 +78,14 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
         let closure_ptr = Box::into_raw(closure_box);
 
         fn thread_trampoline<F: FnOnce() + Send + 'static>(closure_ptr: *mut F) {
-            #[cfg(target_arch = "aarch64")]
-            unsafe {
-                core::arch::asm!(
-                    "msr daifclr, #2",
-                    options(nomem, nostack)
-                );
-            }
+            A::enable_interrupts();
 
             let closure = unsafe { Box::from_raw(closure_ptr) };
             closure();
 
-            // Preemption will handle scheduling other threads
-            #[allow(clippy::empty_loop)]
+           pl011_println!("[THREAD] Finished, yielding to allow other threads to run");
             loop {
-                #[cfg(target_arch = "aarch64")]
-                unsafe {
-                    core::arch::asm!("wfe", options(nomem, nostack));
-                }
-                #[cfg(not(target_arch = "aarch64"))]
-                core::hint::spin_loop();
+                crate::yield_now();
             }
         }
 

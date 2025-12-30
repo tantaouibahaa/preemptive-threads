@@ -15,8 +15,7 @@ impl JoinHandle {
                 break;
             }
 
-            // Yield to scheduler to let other threads (including the one we're
-            // waiting for) run
+  
             crate::yield_now();
         }
 
@@ -83,9 +82,8 @@ mod tests {
         
         assert_eq!(join_handle.thread_id(), thread_id);
         assert!(join_handle.is_alive());
-        assert!(join_handle.try_join().is_none()); // Thread not finished
+        assert!(join_handle.try_join().is_none()); 
         
-        // Simulate thread completion
         thread.set_state(ThreadState::Finished);
         if let Some(mut join_result) = thread.inner.join_result.try_lock() {
             *join_result = Some(());

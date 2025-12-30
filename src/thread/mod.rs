@@ -50,7 +50,6 @@ impl ThreadId {
         Self(unsafe { core::num::NonZeroUsize::new_unchecked(id) })
     }
 
-    /// Get the raw ID value.
     pub fn get(self) -> usize {
         self.0.get()
     }
@@ -74,7 +73,6 @@ pub struct Thread {
     inner: ArcLite<ThreadInner>,
 }
 
-/// Internal thread data shared between Thread and JoinHandle.
 pub struct ThreadInner {
     pub id: ThreadId,
     pub state: AtomicU8,

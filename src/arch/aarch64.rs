@@ -75,10 +75,11 @@ impl Arch for Aarch64Arch {
     unsafe fn context_switch(prev: *mut Self::SavedContext, next: *const Self::SavedContext) {
         unsafe {
             asm!(
-                // x12 = save base, x10 = load base
+                // x12 = save base, x13 = load base
                 "mov x12, {prev}",
-                "mov x10, {next}",
+                "mov x13, {next}",
 
+                // Save current context to prev
                 "mov x11, sp",
                 "str x11, [x12, #248]",
                 "adr x11, 1f",
@@ -104,30 +105,37 @@ impl Arch for Aarch64Arch {
                 "stp x28,x29, [x12, #224]",
                 "str x30,     [x12, #240]",
 
-                "ldr x11, [x10, #248]",
+                // Load new context from next (x13 still points to it)
+                "ldr x11, [x13, #248]",
                 "mov sp, x11",
-                "ldr x11, [x10, #264]",
+                "ldr x11, [x13, #264]",
                 "msr nzcv, x11",
 
-                "ldp x0, x1,  [x10, #0]",
-                "ldp x2, x3,  [x10, #16]",
-                "ldp x4, x5,  [x10, #32]",
-                "ldp x6, x7,  [x10, #48]",
-                "ldr x8,      [x10, #64]",
-                "ldr x9,      [x10, #72]",
-                "ldp x10,x11, [x10, #80]",
-                "ldp x12,x13, [x10, #96]",
-                "ldp x14,x15, [x10, #112]",
-                "ldp x16,x17, [x10, #128]",
-                "ldp x18,x19, [x10, #144]",
-                "ldp x20,x21, [x10, #160]",
-                "ldp x22,x23, [x10, #176]",
-                "ldp x24,x25, [x10, #192]",
-                "ldp x26,x27, [x10, #208]",
-                "ldp x28,x29, [x10, #224]",
-                "ldr x30,     [x10, #240]",
+                // Load all registers except x10,x11,x12,x13 first
+                "ldp x0, x1,  [x13, #0]",
+                "ldp x2, x3,  [x13, #16]",
+                "ldp x4, x5,  [x13, #32]",
+                "ldp x6, x7,  [x13, #48]",
+                "ldr x8,      [x13, #64]",
+                "ldr x9,      [x13, #72]",
+                // Skip x10,x11 for now
+                // Skip x12,x13 for now
+                "ldp x14,x15, [x13, #112]",
+                "ldp x16,x17, [x13, #128]",
+                "ldp x18,x19, [x13, #144]",
+                "ldp x20,x21, [x13, #160]",
+                "ldp x22,x23, [x13, #176]",
+                "ldp x24,x25, [x13, #192]",
+                "ldp x26,x27, [x13, #208]",
+                "ldp x28,x29, [x13, #224]",
+                "ldr x30,     [x13, #240]",
 
-                "ldr x11, [x10, #256]",
+                // Now load the PC into x11 and x10,x12,x13 from context
+                "ldr x11, [x13, #256]",  // PC
+                "ldp x10,x12, [x13, #80]",  // x10, x11 (but x11 will be overwritten by PC)
+                "ldp x12,x13, [x13, #96]",  // x12, x13
+
+                // Jump to PC
                 "br x11",
 
                 "1:",
@@ -136,6 +144,7 @@ impl Arch for Aarch64Arch {
                 out("x10") _,
                 out("x11") _,
                 out("x12") _,
+                out("x13") _,
             );
         }
     }
