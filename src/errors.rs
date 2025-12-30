@@ -1,7 +1,4 @@
-//! Comprehensive error handling for the threading system.
-//!
-//! This module provides detailed error types for all threading operations,
-//! enabling proper error handling and debugging throughout the system.
+
 
 #![allow(clippy::uninlined_format_args)]
 
@@ -12,51 +9,30 @@ use alloc::string::String;
 /// Result type for threading operations.
 pub type ThreadResult<T> = Result<T, ThreadError>;
 
-/// Comprehensive error type for all threading operations.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ThreadError {
-    /// Thread spawning errors
     Spawn(SpawnError),
-    /// Thread joining errors  
     Join(JoinError),
-    /// Scheduling errors
     Schedule(ScheduleError),
-    /// Memory allocation errors
     Memory(MemoryError),
-    /// Timer and timing errors
-    Timer(TimerError),
-    /// Architecture-specific errors
+
     Arch(ArchError),
-    /// Thread-local storage errors
     Tls(TlsError),
-    /// Permission and security errors
     Permission(PermissionError),
-    /// Resource limit errors
     Resource(ResourceError),
-    /// Invalid operation errors
     InvalidOperation(InvalidOperationError),
 }
 
-/// Errors that can occur during thread spawning.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SpawnError {
-    /// System is not initialized
     NotInitialized,
-    /// Out of memory for stack allocation
     OutOfMemory,
-    /// Maximum number of threads reached
     TooManyThreads,
-    /// Invalid stack size specified
     InvalidStackSize(usize),
-    /// Invalid priority specified
     InvalidPriority(u8),
-    /// Invalid CPU affinity specified
     InvalidAffinity(u64),
-    /// Thread name is invalid or too long
     InvalidName(String),
-    /// Architecture does not support requested feature
     UnsupportedFeature(String),
-    /// Scheduler rejected the thread
     SchedulerRejected,
 }
 
@@ -113,22 +89,6 @@ pub enum MemoryError {
     InvalidLayout,
 }
 
-/// Timer and timing related errors.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TimerError {
-    /// Timer not initialized
-    NotInitialized,
-    /// Timer already running
-    AlreadyRunning,
-    /// Timer not running
-    NotRunning,
-    /// Invalid timer frequency
-    InvalidFrequency(u32),
-    /// Timer hardware not available
-    HardwareNotAvailable,
-    /// Invalid timer configuration
-    InvalidConfig,
-}
 
 /// Architecture-specific errors.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -220,7 +180,6 @@ impl fmt::Display for ThreadError {
             ThreadError::Join(e) => write!(f, "Thread join error: {}", e),
             ThreadError::Schedule(e) => write!(f, "Scheduling error: {}", e),
             ThreadError::Memory(e) => write!(f, "Memory error: {}", e),
-            ThreadError::Timer(e) => write!(f, "Timer error: {}", e),
             ThreadError::Arch(e) => write!(f, "Architecture error: {}", e),
             ThreadError::Tls(e) => write!(f, "Thread-local storage error: {}", e),
             ThreadError::Permission(e) => write!(f, "Permission error: {}", e),
@@ -286,18 +245,7 @@ impl fmt::Display for MemoryError {
     }
 }
 
-impl fmt::Display for TimerError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            TimerError::NotInitialized => write!(f, "Timer not initialized"),
-            TimerError::AlreadyRunning => write!(f, "Timer already running"),
-            TimerError::NotRunning => write!(f, "Timer not running"),
-            TimerError::InvalidFrequency(freq) => write!(f, "Invalid timer frequency: {} Hz", freq),
-            TimerError::HardwareNotAvailable => write!(f, "Timer hardware not available"),
-            TimerError::InvalidConfig => write!(f, "Invalid timer configuration"),
-        }
-    }
-}
+
 
 impl fmt::Display for ArchError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -388,11 +336,7 @@ impl From<MemoryError> for ThreadError {
     }
 }
 
-impl From<TimerError> for ThreadError {
-    fn from(error: TimerError) -> Self {
-        ThreadError::Timer(error)
-    }
-}
+
 
 impl From<ArchError> for ThreadError {
     fn from(error: ArchError) -> Self {
@@ -424,30 +368,9 @@ impl From<InvalidOperationError> for ThreadError {
     }
 }
 
-// Convert from old SpawnError to new system
-impl From<crate::kernel::SpawnError> for SpawnError {
-    fn from(error: crate::kernel::SpawnError) -> Self {
-        match error {
-            crate::kernel::SpawnError::NotInitialized => SpawnError::NotInitialized,
-            crate::kernel::SpawnError::OutOfMemory => SpawnError::OutOfMemory,
-            crate::kernel::SpawnError::TooManyThreads => SpawnError::TooManyThreads,
-            crate::kernel::SpawnError::InvalidStackSize => SpawnError::InvalidStackSize(0),
-        }
-    }
-}
 
-impl From<crate::time::TimerError> for TimerError {
-    fn from(error: crate::time::TimerError) -> Self {
-        match error {
-            crate::time::TimerError::NotInitialized => TimerError::NotInitialized,
-            crate::time::TimerError::AlreadyRunning => TimerError::AlreadyRunning,
-            crate::time::TimerError::NotRunning => TimerError::NotRunning,
-            crate::time::TimerError::UnsupportedFrequency => TimerError::InvalidFrequency(0),
-            crate::time::TimerError::InvalidConfig => TimerError::InvalidConfig,
-            crate::time::TimerError::NotAvailable => TimerError::HardwareNotAvailable,
-        }
-    }
-}
+
+
 
 // Convenience constructors for common error patterns
 impl ThreadError {

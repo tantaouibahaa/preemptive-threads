@@ -1,27 +1,16 @@
-//! Kernel abstraction for managing the threading system.
-//!
-//! This module provides the main `Kernel` struct that coordinates all
-//! threading operations for the Raspberry Pi Zero 2 W.
+
 
 use crate::arch::Arch;
 use crate::sched::Scheduler;
-use crate::thread_new::{JoinHandle, ReadyRef, RunningRef, Thread, ThreadId};
+use crate::thread::{JoinHandle, ReadyRef, RunningRef, Thread, ThreadId};
 use crate::mem::{StackPool, StackSizeClass};
+use crate::errors::SpawnError;
 use core::marker::PhantomData;
 use portable_atomic::{AtomicBool, AtomicUsize, AtomicPtr, Ordering};
 use alloc::boxed::Box;
 
 static GLOBAL_KERNEL: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 
-/// Main kernel handle that manages the threading system.
-///
-/// This struct coordinates all threading operations and provides a safe
-/// interface to the underlying scheduler and architecture abstractions.
-///
-/// # Type Parameters
-///
-/// * `A` - Architecture implementation
-/// * `S` - Scheduler implementation
 pub struct Kernel<A: Arch, S: Scheduler> {
     scheduler: S,
     stack_pool: StackPool,
@@ -32,15 +21,6 @@ pub struct Kernel<A: Arch, S: Scheduler> {
 }
 
 impl<A: Arch, S: Scheduler> Kernel<A, S> {
-    /// Create a new kernel instance.
-    ///
-    /// # Arguments
-    ///
-    /// * `scheduler` - Scheduler implementation to use
-    ///
-    /// # Returns
-    ///
-    /// A new kernel instance ready for initialization.
     pub const fn new(scheduler: S) -> Self {
         Self {
             scheduler,
@@ -52,14 +32,6 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
         }
     }
 
-    /// Initialize the kernel.
-    ///
-    /// This must be called before any threading operations can be performed.
-    /// It sets up architecture-specific features and prepares the scheduler.
-    ///
-    /// # Returns
-    ///
-    /// `Ok(())` if initialization succeeds, `Err(())` if already initialized.
     pub fn init(&self) -> Result<(), ()> {
         if self
             .initialized
@@ -106,26 +78,24 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
         let closure_ptr = Box::into_raw(closure_box);
 
         fn thread_trampoline<F: FnOnce() + Send + 'static>(closure_ptr: *mut F) {
-            #[cfg(target_arch = "aarch64")]
-            unsafe {
-                core::arch::asm!(
-                    "msr daifclr, #2",
-                    options(nomem, nostack)
-                );
-            }
+            crate::arch::DefaultArch::enable_interrupts();
 
             let closure = unsafe { Box::from_raw(closure_ptr) };
             closure();
 
-            // Preemption will handle scheduling other threads
-            #[allow(clippy::empty_loop)]
+            {
+                use crate::thread::current_thread_id;
+                let tid = current_thread_id().get();
+                crate::pl011_println!(r#"{{"id":"log_trampoline_finish","timestamp":0,"location":"kernel.rs:86","message":"Thread finished execution","data":{{"thread_id":{}}},"sessionId":"debug-session","runId":"post-fix","hypothesisId":"A,B,D"}}"#, tid);
+            }
+            crate::pl011_println!("[THREAD] Finished, calling finish_current()");
+            
+            crate::kernel::finish_current();
+            
             loop {
-                #[cfg(target_arch = "aarch64")]
                 unsafe {
                     core::arch::asm!("wfe", options(nomem, nostack));
                 }
-                #[cfg(not(target_arch = "aarch64"))]
-                core::hint::spin_loop();
             }
         }
 
@@ -173,6 +143,84 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
     }
 
     #[inline(never)]
+    pub fn finish_and_yield(&self) {
+        {
+            crate::pl011_println!(r#"{{"id":"log_finish_and_yield_entry","timestamp":0,"location":"kernel.rs:155","message":"finish_and_yield method entry","data":{{"initialized":{}}},"sessionId":"debug-session","runId":"post-fix","hypothesisId":"A,C"}}"#, self.is_initialized());
+        }
+        if !self.is_initialized() {
+            {
+                crate::pl011_println!(r#"{{"id":"log_finish_and_yield_not_init","timestamp":0,"location":"kernel.rs:158","message":"Kernel not initialized, returning","data":{{}},"sessionId":"debug-session","runId":"post-fix","hypothesisId":"A,C"}}"#);
+            }
+            return;
+        }
+
+        A::disable_interrupts();
+
+        let mut current_guard = self.current_thread.lock();
+
+        if let Some(current) = current_guard.take() {
+            let prev_id = current.id().get();
+            let prev_ctx = current.0.context_ptr();
+
+            {
+                crate::pl011_println!(r#"{{"id":"log_finish_and_yield","timestamp":0,"location":"kernel.rs:180","message":"finish_and_yield called","data":{{"thread_id":{}}},"sessionId":"debug-session","runId":"post-fix","hypothesisId":"A,C"}}"#, prev_id);
+            }
+
+            {
+                crate::pl011_println!(r#"{{"id":"log_finish_after_get_current","timestamp":0,"location":"kernel.rs:184","message":"Got current thread, about to finish","data":{{"thread_id":{}}},"sessionId":"debug-session","runId":"post-fix","hypothesisId":"A,C"}}"#, prev_id);
+            }
+
+            current.0.set_state(crate::thread::ThreadState::Finished);
+            crate::pl011_println!("[DEBUG] Set thread {} state to Finished", prev_id);
+            crate::pl011_println!("[DEBUG] About to drop current RunningRef");
+
+            {
+                let _ = current;
+            }
+            crate::pl011_println!("[DEBUG] Thread {} dropped, ready to pick next", prev_id);
+            
+            {
+                crate::pl011_println!(r#"{{"id":"log_finish_after_finish","timestamp":0,"location":"kernel.rs:210","message":"After marking thread as finished","data":{{"thread_id":{}}},"sessionId":"debug-session","runId":"post-fix","hypothesisId":"A,C"}}"#, prev_id);
+            }
+
+            {
+                crate::pl011_println!(r#"{{"id":"log_finish_before_pick_next","timestamp":0,"location":"kernel.rs:181","message":"About to call pick_next","data":{{"thread_id":{}}},"sessionId":"debug-session","runId":"post-fix","hypothesisId":"B,E"}}"#, prev_id);
+            }
+            if let Some(next) = self.scheduler.pick_next(0) {
+                let next_id = next.id().get();
+                let next_ctx = next.0.context_ptr();
+                {
+                    crate::pl011_println!(r#"{{"id":"log_finish_pick_next","timestamp":0,"location":"kernel.rs:165","message":"pick_next after finish","data":{{"finished_thread":{},"next_thread":{}}},"sessionId":"debug-session","runId":"post-fix","hypothesisId":"B,E"}}"#, prev_id, next_id);
+                }
+                crate::pl011_println!("[FINISH] T{} finished, switching to T{}", prev_id, next_id);
+                let running = next.start_running();
+                *current_guard = Some(running);
+                drop(current_guard);
+
+                if !prev_ctx.is_null() && !next_ctx.is_null() {
+                    unsafe {
+                        A::context_switch(
+                            prev_ctx as *mut A::SavedContext,
+                            next_ctx as *const A::SavedContext,
+                        );
+                    }
+                    A::enable_interrupts();
+                } else {
+                    A::enable_interrupts();
+                }
+            } else {
+                {
+                    crate::pl011_println!(r#"{{"id":"log_finish_no_next","timestamp":0,"location":"kernel.rs:185","message":"No next thread after finish","data":{{"finished_thread":{}}},"sessionId":"debug-session","runId":"post-fix","hypothesisId":"B,E"}}"#, prev_id);
+                }
+                A::enable_interrupts();
+            }
+        } else {
+            drop(current_guard);
+            A::enable_interrupts();
+        }
+    }
+
+    #[inline(never)]
     pub fn yield_now(&self) {
         if !self.is_initialized() {
             return;
@@ -185,6 +233,12 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
         if let Some(current) = current_guard.take() {
             let prev_id = current.id().get();
             let prev_ctx = current.0.context_ptr();
+            let prev_state = current.0.state();
+
+            {
+                let state_val = prev_state as u8;
+                crate::pl011_println!(r#"{{"id":"log_yield_entry","timestamp":0,"location":"kernel.rs:200","message":"yield_now called","data":{{"thread_id":{},"state":{}}},"sessionId":"debug-session","runId":"post-fix","hypothesisId":"A,B,C"}}"#, prev_id, state_val);
+            }
 
             let current_sp: u64;
             unsafe { core::arch::asm!("mov {}, sp", out(reg) current_sp); }
@@ -192,11 +246,19 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
                 prev_id, current_sp, prev_ctx as usize);
 
             let ready = current.stop_running();
+            {
+                let after_state = ready.0.state();
+                let state_val = after_state as u8;
+                crate::pl011_println!(r#"{{"id":"log_yield_after_stop","timestamp":0,"location":"kernel.rs:215","message":"After stop_running, before enqueue","data":{{"thread_id":{},"state":{}}},"sessionId":"debug-session","runId":"post-fix","hypothesisId":"A,C"}}"#, prev_id, state_val);
+            }
             self.scheduler.enqueue(ready);
 
             if let Some(next) = self.scheduler.pick_next(0) {
                 let next_id = next.id().get();
                 let next_ctx = next.0.context_ptr();
+                {
+                    crate::pl011_println!(r#"{{"id":"log_yield_pick_next","timestamp":0,"location":"kernel.rs:158","message":"pick_next returned thread","data":{{"yielding_thread":{},"next_thread":{}}},"sessionId":"debug-session","runId":"run1","hypothesisId":"B,E"}}"#, prev_id, next_id);
+                }
                 crate::pl011_println!("[YIELD] {} -> {}: next_ctx_addr={:#x}",
                     prev_id, next_id, next_ctx as usize);
                 let next_pc = unsafe { (*next_ctx).pc };
@@ -223,6 +285,9 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
                     A::enable_interrupts();
                 }
             } else {
+                {
+                    crate::pl011_println!(r#"{{"id":"log_yield_no_next","timestamp":0,"location":"kernel.rs:185","message":"pick_next returned None","data":{{"yielding_thread":{}}},"sessionId":"debug-session","runId":"run1","hypothesisId":"B,E"}}"#, prev_id);
+                }
                 A::enable_interrupts();
             }
         } else {
@@ -279,71 +344,6 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
             }
         } else {
             A::enable_interrupts();
-        }
-    }
-
-    /// Handle a timer interrupt for preemptive scheduling (legacy - uses context_switch).
-    ///
-    /// This should be called from the architecture-specific timer interrupt handler.
-    ///
-    /// # Safety
-    ///
-    /// Must be called from an interrupt context with interrupts disabled.
-    #[allow(dead_code)]
-    pub unsafe fn handle_timer_interrupt(&self) {
-        if !self.is_initialized() {
-            return;
-        }
-
-        let mut current_guard = match self.current_thread.try_lock() {
-            Some(guard) => guard,
-            None => return,
-        };
-
-        if let Some(ref _current) = *current_guard {
-            // TODO: Restore time slice checking once debugging is complete
-            let should_switch = true; // current.should_preempt();
-            if should_switch {
-                if let Some(current) = current_guard.take() {
-                    let prev_ctx = current.0.context_ptr();
-
-                    let ready = current.stop_running();
-                    self.scheduler.enqueue(ready);
-
-                    if let Some(next) = self.scheduler.pick_next(0) {
-                        let next_ctx = next.0.context_ptr();
-                        let running = next.start_running();
-                        *current_guard = Some(running);
-                        drop(current_guard);
-
-                        if !prev_ctx.is_null() && !next_ctx.is_null() {
-                            unsafe {
-                                A::context_switch(
-                                    prev_ctx as *mut A::SavedContext,
-                                    next_ctx as *const A::SavedContext,
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-        } else {
-            if let Some(next) = self.scheduler.pick_next(0) {
-                let next_ctx = next.0.context_ptr();
-                let running = next.start_running();
-                *current_guard = Some(running);
-                drop(current_guard);
-
-                if !next_ctx.is_null() {
-                    unsafe {
-                        let mut dummy_ctx = A::SavedContext::default();
-                        A::context_switch(
-                            &mut dummy_ctx as *mut A::SavedContext,
-                            next_ctx as *const A::SavedContext,
-                        );
-                    }
-                }
-            }
         }
     }
 
@@ -422,14 +422,7 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
     }
 }
 
-/// Errors that can occur when spawning threads.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SpawnError {
-    NotInitialized,
-    OutOfMemory,
-    TooManyThreads,
-    InvalidStackSize,
-}
+
 
 unsafe impl<A: Arch, S: Scheduler> Send for Kernel<A, S> {}
 unsafe impl<A: Arch, S: Scheduler> Sync for Kernel<A, S> {}
@@ -439,6 +432,9 @@ unsafe impl<A: Arch, S: Scheduler> Sync for Kernel<A, S> {}
 /// Returns None if no kernel has been registered.
 pub fn get_global_kernel<A: Arch, S: Scheduler>() -> Option<&'static Kernel<A, S>> {
     let ptr = GLOBAL_KERNEL.load(Ordering::Acquire);
+    {
+        crate::pl011_println!(r#"{{"id":"log_get_global_kernel","timestamp":0,"location":"kernel.rs:433","message":"get_global_kernel called","data":{{"ptr_is_null":{}}},"sessionId":"debug-session","runId":"post-fix","hypothesisId":"A,C"}}"#, ptr.is_null());
+    }
     if ptr.is_null() {
         None
     } else {
@@ -455,5 +451,47 @@ pub fn yield_current() {
 
     if let Some(kernel) = get_global_kernel::<DefaultArch, RoundRobinScheduler>() {
         kernel.yield_now();
+    }
+}
+
+/
+    use crate::arch::DefaultArch;
+    use crate::sched::RoundRobinScheduler;
+    use crate::sched::FirstComeFirstServeScheduler;
+
+    {
+        crate::pl011_println!(r#"{{"id":"log_finish_current_entry","timestamp":0,"location":"kernel.rs:458","message":"finish_current called","data":{{}},"sessionId":"debug-session","runId":"post-fix","hypothesisId":"A,C"}}"#);
+    }
+
+    if let Some(kernel) = get_global_kernel::<DefaultArch, FirstComeFirstServeScheduler>() {
+        {
+            crate::pl011_println!(r#"{{"id":"log_finish_current_found_fcfs","timestamp":0,"location":"kernel.rs:475","message":"Found FirstComeFirstServeScheduler kernel","data":{{}},"sessionId":"debug-session","runId":"post-fix","hypothesisId":"A,C"}}"#);
+        }
+        {
+            crate::pl011_println!(r#"{{"id":"log_finish_current_calling_finish","timestamp":0,"location":"kernel.rs:481","message":"About to call finish_and_yield","data":{{}},"sessionId":"debug-session","runId":"post-fix","hypothesisId":"A,C"}}"#);
+        }
+        kernel.finish_and_yield();
+        {
+            crate::pl011_println!(r#"{{"id":"log_finish_current_after_call","timestamp":0,"location":"kernel.rs:483","message":"Returned from finish_and_yield","data":{{}},"sessionId":"debug-session","runId":"post-fix","hypothesisId":"A,C"}}"#);
+        }
+        return;
+    }
+    
+    if let Some(kernel) = get_global_kernel::<DefaultArch, RoundRobinScheduler>() {
+        {
+            crate::pl011_println!(r#"{{"id":"log_finish_current_found_rr","timestamp":0,"location":"kernel.rs:490","message":"Found RoundRobinScheduler kernel","data":{{}},"sessionId":"debug-session","runId":"post-fix","hypothesisId":"A,C"}}"#);
+        }
+        {
+            crate::pl011_println!(r#"{{"id":"log_finish_current_calling_finish","timestamp":0,"location":"kernel.rs:496","message":"About to call finish_and_yield","data":{{}},"sessionId":"debug-session","runId":"post-fix","hypothesisId":"A,C"}}"#);
+        }
+        kernel.finish_and_yield();
+        {
+            crate::pl011_println!(r#"{{"id":"log_finish_current_after_call","timestamp":0,"location":"kernel.rs:500","message":"Returned from finish_and_yield","data":{{}},"sessionId":"debug-session","runId":"post-fix","hypothesisId":"A,C"}}"#);
+        }
+        return;
+    }
+    
+    {
+        crate::pl011_println!(r#"{{"id":"log_finish_current_not_found","timestamp":0,"location":"kernel.rs:477","message":"Global kernel not found","data":{{}},"sessionId":"debug-session","runId":"post-fix","hypothesisId":"A,C"}}"#);
     }
 }

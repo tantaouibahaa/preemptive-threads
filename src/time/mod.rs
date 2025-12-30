@@ -1,13 +1,88 @@
-//! Time management and timer interrupt handling.
-//!
-//! This module provides timer interrupt handling, time slice accounting,
-//! and preemption support for the threading system.
+//! Time management and time slice accounting.
+ 
+use portable_atomic::{AtomicU32, AtomicU64, Ordering};
 
-pub mod tick;
-pub mod timer;
+pub struct TimeSlice {
+    vruntime: AtomicU64,
+    slice_start: AtomicU64,
+    quantum: AtomicU64,
+    priority: AtomicU32,
+}
 
-pub use tick::{TickCounter, TimeSlice};
-pub use timer::{Timer, TimerConfig, TimerError, PreemptGuard, IrqGuard};
+impl TimeSlice {
+    pub fn new(priority: u8) -> Self {
+        let quantum = Self::calculate_quantum(priority);
+        Self {
+            vruntime: AtomicU64::new(0),
+            slice_start: AtomicU64::new(0),
+            quantum: AtomicU64::new(quantum),
+            priority: AtomicU32::new(priority as u32),
+        }
+    }
+
+    pub fn start_slice(&self, current_time: Instant) {
+        self.slice_start.store(current_time.as_nanos(), Ordering::Release);
+    }
+
+    pub fn update_vruntime(&self, current_time: Instant) -> bool {
+        let slice_start = self.slice_start.load(Ordering::Acquire);
+        let quantum = self.quantum.load(Ordering::Acquire);
+        let priority = self.priority.load(Ordering::Acquire);
+
+        if slice_start == 0 {
+            return false;
+        }
+
+        let elapsed = current_time.as_nanos().saturating_sub(slice_start);
+        let priority_factor = Self::calculate_priority_factor(priority as u8);
+        let virtual_elapsed = (elapsed * 1000) / priority_factor as u64;
+
+        self.vruntime.fetch_add(virtual_elapsed, Ordering::AcqRel);
+        elapsed >= quantum
+    }
+
+    pub fn vruntime(&self) -> u64 {
+        self.vruntime.load(Ordering::Acquire)
+    }
+
+    pub fn set_priority(&self, new_priority: u8) {
+        self.priority.store(new_priority as u32, Ordering::Release);
+        let new_quantum = Self::calculate_quantum(new_priority);
+        self.quantum.store(new_quantum, Ordering::Release);
+    }
+
+    pub fn set_custom_duration(&self, duration: Duration) {
+        self.quantum.store(duration.as_nanos(), Ordering::Release);
+    }
+
+    pub fn priority(&self) -> u8 {
+        self.priority.load(Ordering::Acquire) as u8
+    }
+
+    fn calculate_quantum(priority: u8) -> u64 {
+        let base_quantum = DEFAULT_QUANTUM_NS;
+        match priority {
+            0..=63 => base_quantum / 2,
+            64..=127 => base_quantum,
+            128..=191 => base_quantum * 2,
+            192..=255 => base_quantum * 4,
+        }
+    }
+
+    fn calculate_priority_factor(priority: u8) -> u32 {
+        match priority {
+            0..=63 => 500,
+            64..=127 => 1000,
+            128..=191 => 1500,
+            192..=255 => 2000,
+        }
+    }
+ 
+    pub fn should_preempt(&self) -> bool {
+        let current_time = Instant::now();
+        self.update_vruntime(current_time)
+    }
+}
 
 /// Get monotonic time - alias for Instant::now() for compatibility
 pub fn get_monotonic_time() -> Instant {

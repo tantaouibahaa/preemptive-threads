@@ -3,11 +3,11 @@
 //! This module provides a pool-based allocator for thread stacks with
 //! different size classes and optional guard page support.
 
+
+
 use portable_atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
 use core::ptr::NonNull;
-// mem and MaybeUninit imports not needed yet
-// use core::mem::{self, MaybeUninit};
 
 // Use Vec from alloc or std depending on features
 #[cfg(feature = "std-shim")]
@@ -30,7 +30,7 @@ use alloc::vec::Vec;
 pub enum StackSizeClass {
     /// Small stack: 4 KiB
     Small = 4096,
-    /// Medium stack: 16 KiB  
+    /// Medium stack: 16 KiB
     Medium = 16384,
     /// Large stack: 64 KiB
     Large = 65536,
@@ -43,7 +43,7 @@ impl StackSizeClass {
     pub fn size(self) -> usize {
         self as usize
     }
-    
+
     /// Choose the appropriate size class for a requested stack size.
     ///
     /// # Arguments
@@ -86,28 +86,29 @@ impl Stack {
     pub fn size(&self) -> usize {
         self.usable_size
     }
-    
+
     /// Get the stack size class.
     pub fn size_class(&self) -> StackSizeClass {
         self.size_class
     }
-    
+
     /// Get a pointer to the bottom of the stack (highest address).
-    ///
-    /// On most architectures, stacks grow downward, so this is where
-    /// the stack pointer should be initialized.
     pub fn stack_bottom(&self) -> *mut u8 {
-        unsafe {
+        let mut sp = unsafe {
             self.memory.as_ptr().add(
                 if self.has_guard_pages {
-                    4096 + self.usable_size // Skip guard page
+                    4096 + self.usable_size
                 } else {
                     self.usable_size
                 }
-            )
-        }
+            ) as usize
+        };
+
+        sp &= !0xF;
+        sp as *mut u8
     }
-    
+
+
     /// Get a pointer to the top of the stack (lowest address).
     pub fn stack_top(&self) -> *const u8 {
         unsafe {
@@ -118,22 +119,21 @@ impl Stack {
             }
         }
     }
-    
+
     /// Get bottom pointer (alias for stack_bottom for compatibility).
     pub fn bottom(&self) -> *mut u8 {
         self.stack_bottom()
     }
-    
-    /// Get top pointer (alias for stack_top for compatibility).  
+
+    /// Get top pointer (alias for stack_top for compatibility).
     pub fn top(&self) -> *const u8 {
         self.stack_top()
     }
-    
-    /// Check if this stack has guard pages enabled.
+
     pub fn has_guard_pages(&self) -> bool {
         self.has_guard_pages
     }
-    
+
     /// Install a stack canary value for overflow detection.
     ///
     /// This writes a known pattern at the bottom of the usable stack
@@ -148,7 +148,7 @@ impl Stack {
             canary_location.write(canary);
         }
     }
-    
+
     /// Check if the stack canary is still intact.
     ///
     /// # Arguments
@@ -175,7 +175,6 @@ pub struct StackPool {
     stats: StackPoolStats,
 }
 
-/// Statistics for the stack pool allocator.
 #[derive(Debug, Default)]
 struct StackPoolStats {
     /// Number of stacks allocated
@@ -193,7 +192,6 @@ impl Default for StackPool {
 }
 
 impl StackPool {
-    /// Create a new stack pool.
     pub const fn new() -> Self {
         Self {
             free_stacks: [
@@ -209,7 +207,7 @@ impl StackPool {
             },
         }
     }
-    
+
     /// Allocate a stack of the given size class.
     ///
     /// This will first try to reuse a stack from the free list, and only
@@ -224,7 +222,7 @@ impl StackPool {
     /// A new stack, or `None` if allocation fails.
     pub fn allocate(&self, size_class: StackSizeClass) -> Option<Stack> {
         let class_index = self.size_class_index(size_class);
-        
+
         // Try to get a stack from the free list first
         if let Some(mut free_list) = self.free_stacks[class_index].try_lock() {
             if let Some(stack) = free_list.pop() {
@@ -232,11 +230,11 @@ impl StackPool {
                 return Some(stack);
             }
         }
-        
+
         // Need to allocate a new stack
         self.allocate_new_stack(size_class)
     }
-    
+
     /// Return a stack to the pool for reuse.
     ///
     /// # Arguments
@@ -252,7 +250,7 @@ impl StackPool {
         }
         // If we can't get the lock, the stack will be dropped
     }
-    
+
     /// Get statistics about the stack pool.
     pub fn stats(&self) -> (usize, usize, usize) {
         (
@@ -261,7 +259,7 @@ impl StackPool {
             self.stats.in_use.load(Ordering::Acquire),
         )
     }
-    
+
     /// Convert a size class to an array index.
     fn size_class_index(&self, size_class: StackSizeClass) -> usize {
         match size_class {
@@ -271,9 +269,8 @@ impl StackPool {
             StackSizeClass::ExtraLarge => 3,
         }
     }
-    
-    /// Allocate a new stack of the given size class.
-    fn allocate_new_stack(&self, size_class: StackSizeClass) -> Option<Stack> {
+
+    fn allocate_new_stack(&self, size_class: StackSizeClass,) -> Option<Stack> {
         let usable_size = size_class.size();
 
         #[cfg(feature = "std-shim")]
@@ -281,7 +278,8 @@ impl StackPool {
             extern crate std;
             use std::alloc::{alloc, Layout};
 
-            let layout = Layout::from_size_align(usable_size, 4096).ok()?;
+            let total_size = usable_size;
+            let layout = Layout::from_size_align(total_size, 4096).ok()?;
             let memory = unsafe { alloc(layout) };
 
             if memory.is_null() {
@@ -296,6 +294,7 @@ impl StackPool {
                 size_class,
                 has_guard_pages: false,
             };
+
 
             self.stats.allocated.fetch_add(1, Ordering::AcqRel);
             self.stats.in_use.fetch_add(1, Ordering::AcqRel);
@@ -354,7 +353,7 @@ unsafe impl Sync for Stack {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_stack_size_class_for_size() {
         assert_eq!(StackSizeClass::for_size(1024), Some(StackSizeClass::Small));
@@ -364,35 +363,35 @@ mod tests {
         assert_eq!(StackSizeClass::for_size(131072), Some(StackSizeClass::ExtraLarge));
         assert_eq!(StackSizeClass::for_size(500000), None);
     }
-    
+
     #[cfg(feature = "std-shim")]
     #[test]
     fn test_stack_pool_basic() {
         let pool = StackPool::new();
         let stack = pool.allocate(StackSizeClass::Small).unwrap();
-        
+
         assert_eq!(stack.size_class(), StackSizeClass::Small);
         assert_eq!(stack.size(), StackSizeClass::Small.size());
-        
+
         pool.deallocate(stack);
-        
+
         let (allocated, deallocated, in_use) = pool.stats();
         assert_eq!(allocated, 1);
         assert_eq!(deallocated, 1);
         assert_eq!(in_use, 0);
     }
-    
+
     #[cfg(feature = "std-shim")]
     #[test]
     fn test_stack_canary() {
         let pool = StackPool::new();
         let stack = pool.allocate(StackSizeClass::Small).unwrap();
-        
+
         let canary_value = 0xDEADBEEFCAFEBABE;
         stack.install_canary(canary_value);
         assert!(stack.check_canary(canary_value));
         assert!(!stack.check_canary(0x1234567890ABCDEF));
-        
+
         pool.deallocate(stack);
     }
 }

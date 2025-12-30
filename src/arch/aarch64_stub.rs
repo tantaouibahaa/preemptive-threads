@@ -81,21 +81,3 @@ impl Arch for Aarch64Arch {
         true
     }
 }
-
-/// Setup preemption timer (stub).
-///
-/// # Safety
-///
-/// Stub function for testing - no actual safety requirements.
-pub unsafe fn setup_preemption_timer(_interval_us: u64) -> Result<(), &'static str> {
-    Ok(())
-}
-
-/// Timer interrupt handler (stub).
-///
-/// # Safety
-///
-/// Stub function for testing - no actual safety requirements.
-pub unsafe fn timer_interrupt_handler() {
-    // Stub
-}
