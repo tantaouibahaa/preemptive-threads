@@ -3,42 +3,76 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
     branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
-  RUST_BACKTRACE: 1
 
 jobs:
-  # Build for the target platform (Raspberry Pi Zero 2 W)
-  build-bare-metal:
-    name: Build (aarch64 bare-metal)
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        rust: [stable]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ matrix.rust }}
-          targets: aarch64-unknown-none
-      - uses: Swatinem/rust-cache@v2
-      - name: Build library
-        run: cargo build --release
-      - name: Build kernel example
-        run: cargo build --release --example rpi_kernel
-
-  clippy:
-    name: Clippy
+  build:
+    name: Build, clippy, docs
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
           targets: aarch64-unknown-none
+          components: clippy, llvm-tools
       - uses: Swatinem/rust-cache@v2
-      - name: Clippy (bare-metal)
-        run: cargo clippy
+      - name: Build all examples (Raspberry Pi and QEMU virt)
+        run: make build
+      - name: Clippy (both boards, warnings are errors)
+        run: make clippy
+      - name: Docs
+        run: RUSTDOCFLAGS="-D warnings" make doc
+      - name: Build kernel8.img
+        run: make kernel8.img
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kernel8.img
+          path: kernel8.img
+
+  msrv:
+    name: MSRV (1.88)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+        with:
+          targets: aarch64-unknown-none
+      - name: Build library and examples
+        run: |
+          cargo build --release --examples
+          cargo build --release --examples --features qemu-virt,semihosting
+
+  qemu:
+    name: QEMU ${{ matrix.machine }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        machine: [virt, virt-el2, raspi3b]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-none
+          components: llvm-tools
+      - uses: Swatinem/rust-cache@v2
+      - name: Install QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-arm
+          qemu-system-aarch64 --version
+      - name: Run test kernel
+        run: make test-${{ matrix.machine }}
+      - name: Test log
+        if: always()
+        run: cat build/test-${{ matrix.machine }}.log || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-log-${{ matrix.machine }}
+          path: build/test-${{ matrix.machine }}.log

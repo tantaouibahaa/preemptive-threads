@@ -128,7 +128,7 @@ pub unsafe fn switch_context(prev_sp: *mut usize, next_sp: usize, handoff: usize
 /// Returns the initial saved stack pointer.
 ///
 /// When first switched to, the thread runs `__pt_thread_entry`, which calls
-/// [`crate::sched::thread_start`] with `arg`. IRQs stay masked until
+/// `thread_start` with `arg`. IRQs stay masked until
 /// `thread_start` has finished the switch bookkeeping, then it unmasks them.
 ///
 /// # Safety

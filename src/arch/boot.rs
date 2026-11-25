@@ -8,10 +8,10 @@
 //! 3. Enable FP/SIMD, the MMU (identity map, caches on) and install VBAR_EL1.
 //!
 //! The primary core additionally patches the level-1 table, clears `.bss`
-//! and calls [`crate::kernel::boot_primary`] with the exception level it was
+//! and calls `boot_primary` with the exception level it was
 //! entered at. Secondary cores enter at `__pt_secondary_entry` (released by
 //! PSCI `CPU_ON` on QEMU virt or by the spin table on the Raspberry Pi) and
-//! call [`crate::kernel::boot_secondary`].
+//! call `boot_secondary`.
 //!
 //! The boot stack of each core later becomes the stack of that core's idle
 //! thread.

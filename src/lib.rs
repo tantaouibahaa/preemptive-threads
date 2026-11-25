@@ -12,7 +12,7 @@
 //!   four priority bands, work stealing and reschedule IPIs.
 //! - Round-robin or FIFO policy within a band.
 //! - Blocking primitives: [`sync::Mutex`] (priority inheritance),
-//!   [`sync::Semaphore`], [`sync::Condvar`], bounded [`sync::channel`],
+//!   [`sync::Semaphore`], [`sync::Condvar`], bounded [`sync::channel()`],
 //!   [`thread::sleep`] and [`thread::JoinHandle::join`] returning the
 //!   thread's value.
 //! - A real heap (`alloc` works), stack pooling and reclamation of

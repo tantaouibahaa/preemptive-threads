@@ -17,14 +17,14 @@
 //!                                                     Dead ──► reaped (stack back to the pool)
 //! ```
 //!
-//! [`schedule`] is the only place a switch happens. It runs with IRQs
+//! `schedule` is the only place a switch happens. It runs with IRQs
 //! masked and no locks held, re-queues the previous thread if it is still
 //! `Running`, picks the next one (local queue, then work stealing, then the
 //! idle thread) and calls [`crate::arch::context::switch_context`].
 //!
 //! A thread that has just been switched away from keeps `on_cpu = true`
 //! until the next thread on that core has finished the switch
-//! ([`finish_switch`]). Pick and steal skip threads that are still on a
+//! (`finish_switch`). Pick and steal skip threads that are still on a
 //! core, so a thread is never resumed on two cores at once and cores never
 //! spin waiting on each other.
 //!
@@ -582,7 +582,7 @@ fn reap(t: Arc<Tcb>) {
 }
 
 /// Mark the current thread blocked. The caller must already have published
-/// it somewhere a waker will find it, and must call [`schedule`] next.
+/// it somewhere a waker will find it, and must call `schedule` next.
 /// IRQs must be masked.
 pub(crate) fn mark_current_blocked() -> Arc<Tcb> {
     debug_assert!(!arch::irqs_enabled());

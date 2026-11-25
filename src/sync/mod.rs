@@ -6,7 +6,7 @@
 //!   `wake_all`) used by everything below.
 //! - [`Mutex`]: blocking mutex with priority inheritance and direct
 //!   hand-off to the highest-priority waiter.
-//! - [`Semaphore`], [`Condvar`] and bounded MPMC [`channel`]s.
+//! - [`Semaphore`], [`Condvar`] and bounded MPMC [`channel()`]s.
 
 pub mod channel;
 mod condvar;
