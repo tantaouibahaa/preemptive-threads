@@ -454,7 +454,7 @@ pub fn yield_current() {
     }
 }
 
-/
+pub fn finish_current() {
     use crate::arch::DefaultArch;
     use crate::sched::RoundRobinScheduler;
     use crate::sched::FirstComeFirstServeScheduler;
