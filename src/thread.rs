@@ -74,6 +74,8 @@ impl Builder {
             NewThread { name: self.name, priority: self.priority, stack_size: self.stack_size, cpu: self.cpu },
             main,
         )?;
+        // Run the new thread right away if it outranks us on this core.
+        sched::preempt_point();
         Ok(JoinHandle { thread: Thread { tcb }, packet })
     }
 }

@@ -180,6 +180,9 @@ pub(crate) static REAPED: AtomicU64 = AtomicU64::new(0);
 static POLICY_FIFO: AtomicBool = AtomicBool::new(false);
 static TIME_SLICE: AtomicU32 = AtomicU32::new(10);
 static TICK_TICKS: AtomicU64 = AtomicU64::new(0);
+/// Every thread ever created that is still allocated (for `dump_state`).
+static REGISTRY: crate::sync::spin::IrqSpinLock<alloc::vec::Vec<alloc::sync::Weak<Tcb>>> =
+    crate::sync::spin::IrqSpinLock::new(alloc::vec::Vec::new());
 
 /// Configure policy, slice length and tick period (counter ticks).
 pub(crate) fn configure(policy: SchedPolicy, slice_ticks: u32, tick_period: u64) {
@@ -248,6 +251,11 @@ pub(crate) fn create_thread(p: NewThread, f: StartFn) -> Result<Arc<Tcb>, crate:
     }
     LIVE_THREADS.fetch_add(1, Ordering::Relaxed);
     SPAWNED.fetch_add(1, Ordering::Relaxed);
+    {
+        let mut reg = REGISTRY.lock();
+        reg.retain(|w| w.strong_count() > 0);
+        reg.push(Arc::downgrade(&tcb));
+    }
     make_ready(tcb.clone());
     Ok(tcb)
 }
@@ -415,6 +423,13 @@ pub(crate) fn set_effective_priority(t: &Arc<Tcb>, prio: u8) {
         RUNNING => {
             let cpu = t.last_cpu.load(Ordering::Relaxed);
             PERCPU[cpu].current_prio.store(prio, Ordering::Relaxed);
+            // Dropping a boost may leave a higher band waiting on that core.
+            if prio < old {
+                let top = PERCPU[cpu].rq.lock().top_band();
+                if top.is_some_and(|b| b > band(prio)) {
+                    kick(cpu);
+                }
+            }
         }
         _ => {}
     }
@@ -515,6 +530,7 @@ fn schedule_impl(preempting: bool) {
     next.cpus_ran.fetch_or(1 << cpu.id, Ordering::Relaxed);
     next.slice_left.store(TIME_SLICE.load(Ordering::Relaxed), Ordering::Relaxed);
     cpu.current_prio.store(next.priority(), Ordering::Relaxed);
+    cpu.current_tid.store(next.id.0, Ordering::Relaxed);
     cpu.is_idle.store(next.is_idle, Ordering::Relaxed);
     cpu.switches.fetch_add(1, Ordering::Relaxed);
     if preempting && prev_state == RUNNING && !prev.is_idle {
@@ -671,6 +687,48 @@ pub(crate) fn idle_loop() -> ! {
         // then taken as soon as IRQs are unmasked: no lost wake-ups.
         arch::wfi();
         arch::irq_enable();
+    }
+}
+
+/// Print the scheduler state of every core (for debugging hangs).
+///
+/// Run queues that are locked at the time are reported as such instead of
+/// waiting for them.
+pub fn dump_state() {
+    if let Some(reg) = REGISTRY.try_lock() {
+        for t in reg.iter().filter_map(|w| w.upgrade()) {
+            crate::println!(
+                "[sched] thread {} {:?}: state={:?} prio={}/{} on_cpu={} last_cpu={} rq_cpu={}",
+                t.id.0,
+                t.name.as_deref().unwrap_or(""),
+                t.state(),
+                t.priority(),
+                t.base_priority(),
+                t.on_cpu.load(Ordering::Relaxed),
+                t.last_cpu.load(Ordering::Relaxed),
+                t.rq_cpu.load(Ordering::Relaxed)
+            );
+        }
+    }
+    for c in PERCPU.iter().filter(|c| c.online.load(Ordering::Acquire)) {
+        let queued = match c.rq.try_lock() {
+            Some(rq) => {
+                let mut v = alloc::vec::Vec::new();
+                rq.for_each(|t| v.push((t.id.0, t.priority(), t.state() as u8, t.on_cpu.load(Ordering::Relaxed))));
+                alloc::format!("{:?}", v)
+            }
+            None => alloc::string::String::from("<locked>"),
+        };
+        crate::println!(
+            "[sched] cpu{}: current={} prio={} idle={} need_resched={} queued={} (id,prio,state,on_cpu)={}",
+            c.id,
+            c.current_tid.load(Ordering::Relaxed),
+            c.current_prio.load(Ordering::Relaxed),
+            c.is_idle.load(Ordering::Relaxed),
+            c.need_resched.load(Ordering::Relaxed),
+            c.nr_queued.load(Ordering::Relaxed),
+            queued
+        );
     }
 }
 

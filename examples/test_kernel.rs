@@ -48,6 +48,27 @@ fn kernel_main() -> ! {
     pt::start(Config::default(), main)
 }
 
+/// Index of the running test and when it started (counter ticks).
+static CURRENT_TEST: AtomicUsize = AtomicUsize::new(0);
+static TEST_STARTED: AtomicU64 = AtomicU64::new(0);
+const TEST_DEADLINE: Duration = Duration::from_secs(20);
+
+/// If one test runs for longer than TEST_DEADLINE, print the scheduler
+/// state and fail fast instead of waiting for the runner's timeout.
+fn watchdog(names: Vec<&'static str>) {
+    loop {
+        thread::sleep(Duration::from_millis(500));
+        let started = TEST_STARTED.load(Ordering::Acquire);
+        let running = Duration::from_nanos(pt::arch::timer::ticks_to_ns(Instant::now().ticks().saturating_sub(started)));
+        if started != 0 && running > TEST_DEADLINE {
+            let name = names.get(CURRENT_TEST.load(Ordering::Acquire)).copied().unwrap_or("?");
+            println!("[TEST] {} ... FAILED: no progress after {:?}", name, TEST_DEADLINE);
+            pt::sched::dump_state();
+            pt::arch::semihosting::exit(2);
+        }
+    }
+}
+
 fn main() {
     let tests: &[Test] = &[
         ("smp_boot", smp_boot),
@@ -67,9 +88,13 @@ fn main() {
         ("fpu_state_preserved", fpu_state_preserved),
         ("threads_reaped", threads_reaped),
     ];
+    let names: Vec<&'static str> = tests.iter().map(|t| t.0).collect();
+    Builder::new().name("watchdog").priority(255).cpu(0).spawn(move || watchdog(names)).unwrap();
     let mut failed = 0;
-    for (name, test) in tests {
+    for (i, (name, test)) in tests.iter().enumerate() {
         let t0 = Instant::now();
+        CURRENT_TEST.store(i, Ordering::Release);
+        TEST_STARTED.store(t0.ticks(), Ordering::Release);
         match test() {
             Ok(detail) => println!("[TEST] {} ... ok ({}; {} ms)", name, detail, t0.elapsed().as_millis()),
             Err(why) => {

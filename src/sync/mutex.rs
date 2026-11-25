@@ -102,11 +102,14 @@ impl<T: ?Sized> Mutex<T> {
 
     pub(crate) fn unlock(&self) {
         {
+            // Everything below runs with IRQs masked (the state lock is an
+            // IrqSpinLock). In particular the next owner is woken *before*
+            // our own boost is dropped: once de-boosted we may be preempted
+            // by a medium-priority thread, and if the hand-off had not
+            // happened yet the waiter would never be woken.
             let mut st = self.state.lock();
             let me = st.owner.take().expect("unlock of an unlocked Mutex");
-            if let Some(p) = st.boosted_from.take() {
-                sched::set_effective_priority(&me, p.max(me.base_priority()));
-            }
+            let my_boost = st.boosted_from.take();
             if let Some(next) = self.waiters.pop() {
                 st.owner = Some(next.clone());
                 // Remaining waiters may outrank the new owner.
@@ -116,8 +119,10 @@ impl<T: ?Sized> Mutex<T> {
                         sched::set_effective_priority(&next, top);
                     }
                 }
-                drop(st);
                 sched::wake(next);
+            }
+            if let Some(p) = my_boost {
+                sched::set_effective_priority(&me, p.max(me.base_priority()));
             }
         }
         sched::preempt_point();

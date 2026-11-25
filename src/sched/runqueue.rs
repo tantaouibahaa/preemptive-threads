@@ -60,6 +60,13 @@ impl RunQueue {
         false
     }
 
+    /// Visit every queued thread, highest band first.
+    pub fn for_each(&self, mut f: impl FnMut(&Arc<Tcb>)) {
+        for q in self.bands.iter().rev() {
+            q.iter().for_each(&mut f);
+        }
+    }
+
     /// Highest band that has a queued thread.
     pub fn top_band(&self) -> Option<usize> {
         (0..BANDS).rev().find(|&b| !self.bands[b].is_empty())

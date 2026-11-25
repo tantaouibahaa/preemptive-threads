@@ -68,8 +68,8 @@ pub fn boot_el() -> u8 {
     BOOT_EL.load(Ordering::Relaxed)
 }
 
-/// Start the scheduler: spawn `main` as the first thread, bring up the
-/// secondary cores and turn the boot core into an idle core. Never returns.
+/// Start the scheduler: bring up the secondary cores, spawn `main` as the
+/// first thread and turn the boot core into an idle core. Never returns.
 ///
 /// Call it exactly once, from `kernel_main` on the boot core.
 pub fn start(config: Config, main: fn()) -> ! {
@@ -78,8 +78,6 @@ pub fn start(config: Config, main: fn()) -> ! {
     let tick_period = (arch::timer::frequency() / config.tick_hz.max(1) as u64).max(1);
     sched::configure(config.policy, config.time_slice_ticks, tick_period);
     CONFIGURED_CPUS.store(cpus, Ordering::Relaxed);
-
-    Builder::new().name("main").spawn(main).expect("failed to spawn main thread");
 
     for (cpu, pc) in PERCPU.iter().enumerate().take(cpus).skip(1) {
         if !platform::start_cpu(cpu, boot::secondary_entry_addr()) {
@@ -95,6 +93,8 @@ pub fn start(config: Config, main: fn()) -> ! {
         }
     }
 
+    // Spawned only now, so `main` sees every core that came up.
+    Builder::new().name("main").spawn(main).expect("failed to spawn main thread");
     sched::start_tick();
     sched::idle_loop()
 }

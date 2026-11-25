@@ -37,6 +37,8 @@ pub struct PerCpu {
     pub(crate) is_idle: AtomicBool,
     /// Effective priority of the running thread.
     pub(crate) current_prio: AtomicU8,
+    /// Id of the running thread (for diagnostics).
+    pub(crate) current_tid: AtomicU64,
     /// Absolute counter value of the next tick.
     pub(crate) next_tick: AtomicU64,
     pub(crate) ticks: AtomicU64,
@@ -63,6 +65,7 @@ impl PerCpu {
             need_resched: AtomicBool::new(false),
             is_idle: AtomicBool::new(true),
             current_prio: AtomicU8::new(0),
+            current_tid: AtomicU64::new(0),
             next_tick: AtomicU64::new(0),
             ticks: AtomicU64::new(0),
             idle_ticks: AtomicU64::new(0),
