@@ -1,67 +1,67 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
+All notable changes to this project are documented here. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
+uses [Semantic Versioning](https://semver.org/).
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+## [1.0.0] - 2026-11-25
 
-## [0.1.2] - 2025-01-04
+A rewrite of the kernel. 1.0 is the first release that is verified end to end:
+a self-checking test kernel runs on three QEMU configurations in CI.
 
 ### Added
-- Lock-free atomic scheduler with per-priority circular buffers
-- Full CPU context saving including FPU/SSE state via FXSAVE/FXRSTOR
-- Enhanced stack protection with guard pages and canary values
-- Signal-safe preemption handler that defers scheduling outside signal context
-- Safe API abstractions including ThreadBuilder, Mutex, and ThreadPool
-- Comprehensive error types for better error handling
-- Stack watermark tracking for high water mark analysis
+- SMP: all four cores run threads. Secondaries are started with PSCI
+  `CPU_ON` on QEMU `virt` and through the firmware spin table on the
+  Raspberry Pi. There are per-core run queues, idle threads, IRQ stacks and
+  timers, plus work stealing and reschedule IPIs (GIC SGI / ARM-local
+  mailbox).
+- BCM2836/7 ARM-local interrupt controller driver for the Pi Zero 2 W and
+  QEMU `raspi3b`.
+- Identity-mapped MMU with caches on every core, required for atomics on
+  real Cortex-A53 hardware.
+- Complete EL3/EL2 to EL1 drop (CNTHCTL_EL2, CNTVOFF_EL2, CPTR_EL2,
+  VPIDR/VMPIDR_EL2, SCTLR_EL1).
+- Blocking primitives: wait queues, `Mutex` with priority inheritance and
+  hand-off, `Semaphore`, `Condvar`, bounded MPMC `channel`, `sleep` on a
+  deadline queue, and `JoinHandle::join` returning the thread's value.
+- Kernel heap (`linked_list_allocator`), stack pool with overflow canaries,
+  and reaping of finished threads.
+- Round-robin (time-sliced) and FIFO policies, four priority bands, CPU
+  affinity, runtime statistics (`stats()`), scheduler state dump.
+- Fatal exception reports (ESR/ELR/FAR/SPSR, decoded class, registers).
+- `examples/test_kernel.rs` with 16 tests and semihosting exit codes;
+  `make test-virt`, `make test-virt-el2` and `make test-raspi3b`; GitHub
+  Actions runs all three, plus clippy, docs and an MSRV build.
+- `docs/ARCHITECTURE.md`, and a real-hardware guide in the README.
 
 ### Changed
-- Replaced global mutable singleton with thread-safe atomic operations
-- Replaced O(n²) scheduling algorithm with O(1) priority queue
-- Improved context switching to save/restore RFLAGS correctly
-- Tests no longer use unsafe transmute
+- Yield, block, exit and IRQ preemption share one context-switch path. IRQs
+  save the full register file including all SIMD registers.
+- A single concrete global kernel replaces the type-punned
+  `get_global_kernel::<A, S>()`. The scheduling policy is a run-time enum.
+- PL011 divisor set for the Pi's 48 MHz UART clock (IBRD 26, FBRD 3).
+- Builds on stable Rust 1.88 or newer, without `build-std`.
+- The license field now matches the shipped license file (MIT).
 
 ### Fixed
-- Race conditions in global scheduler access
-- Memory safety issues with unsynchronized access
-- Signal handler now only uses async-signal-safe operations
-- Context switching now preserves full CPU state
-- Stack overflow detection now checks entire guard region
+- The crate did not compile (`kernel.rs`).
+- New threads started with IRQs masked and a null return address.
+- Cooperative switches left the IRQ save context stale and restored NZCV
+  as SPSR.
+- The lock-free run queue leaked one allocation per push and could use
+  freed nodes.
+- `join()` always failed, `current_thread_id()` always returned 1, and
+  `ThreadBuilder::spawn` ignored its closure.
+- Exception handlers returned into the faulting instruction.
 
-## [0.1.1] - 2025-01-04
+### Removed
+- x86-era leftovers: the signal-based timer, the `std-shim` stub
+  architecture, unused error types and the stale `fuzz/` targets.
+- Debug JSON and `[DEBUG]` output on hot paths.
 
-### Fixed
-- Added bounds checking to prevent out-of-bounds access
-- Added check for current thread existence before attempting exit
-- Added type annotation for MaybeUninit for better type safety
-- Added error handling and reentrancy protection to Linux preemption
+## [0.6.0] and earlier
 
-
-## [0.1.0] - 2025-01-02
-
-### Added
-- Initial release of preemptive multithreading library
-- Core threading primitives with `#![no_std]` support
-- x86_64 assembly-based context switching (50-100 CPU cycles)
-- Priority-based round-robin scheduler
-- Stack overflow detection with guard values
-- Cooperative yielding and thread lifecycle management
-- Preemptive scheduling support (Linux only via SIGALRM)
-- Comprehensive error handling without panics
-- Thread join functionality
-- Performance benchmarks and production readiness assessment
-
-### Features
-- Zero heap allocation
-- Static memory allocation (up to 32 threads)
-- Configurable stack sizes (default 64KB)
-- Minimal dependencies (no_std compatible)
-- Thread priorities (0-255)
-
-### Known Limitations
-- x86_64 platform only
-- Single-core operation only
-- Maximum 32 concurrent threads
-- No thread-local storage
-- Preemption not available on macOS
+Single-core prototypes. Up to 0.1.x they were x86_64 user-space experiments
+(signals for preemption). 0.2-0.6 moved to bare-metal AArch64 with
+timer-driven switching on one core of the Pi Zero 2 W. These versions are
+superseded by 1.0.0.
