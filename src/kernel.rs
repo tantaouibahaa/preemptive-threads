@@ -83,12 +83,6 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
             let closure = unsafe { Box::from_raw(closure_ptr) };
             closure();
 
-            {
-                use crate::thread::current_thread_id;
-                let tid = current_thread_id().get();
-                crate::pl011_println!(r#"{{"id":"log_trampoline_finish","timestamp":0,"location":"kernel.rs:86","message":"Thread finished execution","data":{{"thread_id":{}}},"sessionId":"debug-session","runId":"post-fix","hypothesisId":"A,B,D"}}"#, tid);
-            }
-            crate::pl011_println!("[THREAD] Finished, calling finish_current()");
             
             crate::kernel::finish_current();
             
@@ -144,13 +138,7 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
 
     #[inline(never)]
     pub fn finish_and_yield(&self) {
-        {
-            crate::pl011_println!(r#"{{"id":"log_finish_and_yield_entry","timestamp":0,"location":"kernel.rs:155","message":"finish_and_yield method entry","data":{{"initialized":{}}},"sessionId":"debug-session","runId":"post-fix","hypothesisId":"A,C"}}"#, self.is_initialized());
-        }
         if !self.is_initialized() {
-            {
-                crate::pl011_println!(r#"{{"id":"log_finish_and_yield_not_init","timestamp":0,"location":"kernel.rs:158","message":"Kernel not initialized, returning","data":{{}},"sessionId":"debug-session","runId":"post-fix","hypothesisId":"A,C"}}"#);
-            }
             return;
         }
 
@@ -159,40 +147,15 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
         let mut current_guard = self.current_thread.lock();
 
         if let Some(current) = current_guard.take() {
-            let prev_id = current.id().get();
             let prev_ctx = current.0.context_ptr();
 
-            {
-                crate::pl011_println!(r#"{{"id":"log_finish_and_yield","timestamp":0,"location":"kernel.rs:180","message":"finish_and_yield called","data":{{"thread_id":{}}},"sessionId":"debug-session","runId":"post-fix","hypothesisId":"A,C"}}"#, prev_id);
-            }
-
-            {
-                crate::pl011_println!(r#"{{"id":"log_finish_after_get_current","timestamp":0,"location":"kernel.rs:184","message":"Got current thread, about to finish","data":{{"thread_id":{}}},"sessionId":"debug-session","runId":"post-fix","hypothesisId":"A,C"}}"#, prev_id);
-            }
-
             current.0.set_state(crate::thread::ThreadState::Finished);
-            crate::pl011_println!("[DEBUG] Set thread {} state to Finished", prev_id);
-            crate::pl011_println!("[DEBUG] About to drop current RunningRef");
 
             {
                 let _ = current;
             }
-            crate::pl011_println!("[DEBUG] Thread {} dropped, ready to pick next", prev_id);
-            
-            {
-                crate::pl011_println!(r#"{{"id":"log_finish_after_finish","timestamp":0,"location":"kernel.rs:210","message":"After marking thread as finished","data":{{"thread_id":{}}},"sessionId":"debug-session","runId":"post-fix","hypothesisId":"A,C"}}"#, prev_id);
-            }
-
-            {
-                crate::pl011_println!(r#"{{"id":"log_finish_before_pick_next","timestamp":0,"location":"kernel.rs:181","message":"About to call pick_next","data":{{"thread_id":{}}},"sessionId":"debug-session","runId":"post-fix","hypothesisId":"B,E"}}"#, prev_id);
-            }
             if let Some(next) = self.scheduler.pick_next(0) {
-                let next_id = next.id().get();
                 let next_ctx = next.0.context_ptr();
-                {
-                    crate::pl011_println!(r#"{{"id":"log_finish_pick_next","timestamp":0,"location":"kernel.rs:165","message":"pick_next after finish","data":{{"finished_thread":{},"next_thread":{}}},"sessionId":"debug-session","runId":"post-fix","hypothesisId":"B,E"}}"#, prev_id, next_id);
-                }
-                crate::pl011_println!("[FINISH] T{} finished, switching to T{}", prev_id, next_id);
                 let running = next.start_running();
                 *current_guard = Some(running);
                 drop(current_guard);
@@ -209,9 +172,6 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
                     A::enable_interrupts();
                 }
             } else {
-                {
-                    crate::pl011_println!(r#"{{"id":"log_finish_no_next","timestamp":0,"location":"kernel.rs:185","message":"No next thread after finish","data":{{"finished_thread":{}}},"sessionId":"debug-session","runId":"post-fix","hypothesisId":"B,E"}}"#, prev_id);
-                }
                 A::enable_interrupts();
             }
         } else {
@@ -231,41 +191,13 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
         let mut current_guard = self.current_thread.lock();
 
         if let Some(current) = current_guard.take() {
-            let prev_id = current.id().get();
             let prev_ctx = current.0.context_ptr();
-            let prev_state = current.0.state();
-
-            {
-                let state_val = prev_state as u8;
-                crate::pl011_println!(r#"{{"id":"log_yield_entry","timestamp":0,"location":"kernel.rs:200","message":"yield_now called","data":{{"thread_id":{},"state":{}}},"sessionId":"debug-session","runId":"post-fix","hypothesisId":"A,B,C"}}"#, prev_id, state_val);
-            }
-
-            let current_sp: u64;
-            unsafe { core::arch::asm!("mov {}, sp", out(reg) current_sp); }
-            crate::pl011_println!("[DEBUG] T{} yielding, actual SP={:#x}, ctx_addr={:#x}",
-                prev_id, current_sp, prev_ctx as usize);
 
             let ready = current.stop_running();
-            {
-                let after_state = ready.0.state();
-                let state_val = after_state as u8;
-                crate::pl011_println!(r#"{{"id":"log_yield_after_stop","timestamp":0,"location":"kernel.rs:215","message":"After stop_running, before enqueue","data":{{"thread_id":{},"state":{}}},"sessionId":"debug-session","runId":"post-fix","hypothesisId":"A,C"}}"#, prev_id, state_val);
-            }
             self.scheduler.enqueue(ready);
 
             if let Some(next) = self.scheduler.pick_next(0) {
-                let next_id = next.id().get();
                 let next_ctx = next.0.context_ptr();
-                {
-                    crate::pl011_println!(r#"{{"id":"log_yield_pick_next","timestamp":0,"location":"kernel.rs:158","message":"pick_next returned thread","data":{{"yielding_thread":{},"next_thread":{}}},"sessionId":"debug-session","runId":"run1","hypothesisId":"B,E"}}"#, prev_id, next_id);
-                }
-                crate::pl011_println!("[YIELD] {} -> {}: next_ctx_addr={:#x}",
-                    prev_id, next_id, next_ctx as usize);
-                let next_pc = unsafe { (*next_ctx).pc };
-                let next_sp = unsafe { (*next_ctx).sp };
-                let next_x30 = unsafe { (*next_ctx).x[30] };
-                crate::pl011_println!("        next_pc={:#x}, next_sp={:#x}, next_x30={:#x}",
-                    next_pc, next_sp, next_x30);
                 let running = next.start_running();
                 *current_guard = Some(running);
                 drop(current_guard);
@@ -279,15 +211,10 @@ impl<A: Arch, S: Scheduler> Kernel<A, S> {
                         );
                     }
                     A::enable_interrupts();
-                    let my_saved_sp = unsafe { (*prev_ctx).sp };
-                    crate::pl011_println!("[RESUMED] saved_sp in my ctx = {:#x}", my_saved_sp);
                 } else {
                     A::enable_interrupts();
                 }
             } else {
-                {
-                    crate::pl011_println!(r#"{{"id":"log_yield_no_next","timestamp":0,"location":"kernel.rs:185","message":"pick_next returned None","data":{{"yielding_thread":{}}},"sessionId":"debug-session","runId":"run1","hypothesisId":"B,E"}}"#, prev_id);
-                }
                 A::enable_interrupts();
             }
         } else {
@@ -432,9 +359,6 @@ unsafe impl<A: Arch, S: Scheduler> Sync for Kernel<A, S> {}
 /// Returns None if no kernel has been registered.
 pub fn get_global_kernel<A: Arch, S: Scheduler>() -> Option<&'static Kernel<A, S>> {
     let ptr = GLOBAL_KERNEL.load(Ordering::Acquire);
-    {
-        crate::pl011_println!(r#"{{"id":"log_get_global_kernel","timestamp":0,"location":"kernel.rs:433","message":"get_global_kernel called","data":{{"ptr_is_null":{}}},"sessionId":"debug-session","runId":"post-fix","hypothesisId":"A,C"}}"#, ptr.is_null());
-    }
     if ptr.is_null() {
         None
     } else {
@@ -459,39 +383,13 @@ pub fn finish_current() {
     use crate::sched::RoundRobinScheduler;
     use crate::sched::FirstComeFirstServeScheduler;
 
-    {
-        crate::pl011_println!(r#"{{"id":"log_finish_current_entry","timestamp":0,"location":"kernel.rs:458","message":"finish_current called","data":{{}},"sessionId":"debug-session","runId":"post-fix","hypothesisId":"A,C"}}"#);
-    }
-
     if let Some(kernel) = get_global_kernel::<DefaultArch, FirstComeFirstServeScheduler>() {
-        {
-            crate::pl011_println!(r#"{{"id":"log_finish_current_found_fcfs","timestamp":0,"location":"kernel.rs:475","message":"Found FirstComeFirstServeScheduler kernel","data":{{}},"sessionId":"debug-session","runId":"post-fix","hypothesisId":"A,C"}}"#);
-        }
-        {
-            crate::pl011_println!(r#"{{"id":"log_finish_current_calling_finish","timestamp":0,"location":"kernel.rs:481","message":"About to call finish_and_yield","data":{{}},"sessionId":"debug-session","runId":"post-fix","hypothesisId":"A,C"}}"#);
-        }
         kernel.finish_and_yield();
-        {
-            crate::pl011_println!(r#"{{"id":"log_finish_current_after_call","timestamp":0,"location":"kernel.rs:483","message":"Returned from finish_and_yield","data":{{}},"sessionId":"debug-session","runId":"post-fix","hypothesisId":"A,C"}}"#);
-        }
         return;
     }
     
     if let Some(kernel) = get_global_kernel::<DefaultArch, RoundRobinScheduler>() {
-        {
-            crate::pl011_println!(r#"{{"id":"log_finish_current_found_rr","timestamp":0,"location":"kernel.rs:490","message":"Found RoundRobinScheduler kernel","data":{{}},"sessionId":"debug-session","runId":"post-fix","hypothesisId":"A,C"}}"#);
-        }
-        {
-            crate::pl011_println!(r#"{{"id":"log_finish_current_calling_finish","timestamp":0,"location":"kernel.rs:496","message":"About to call finish_and_yield","data":{{}},"sessionId":"debug-session","runId":"post-fix","hypothesisId":"A,C"}}"#);
-        }
         kernel.finish_and_yield();
-        {
-            crate::pl011_println!(r#"{{"id":"log_finish_current_after_call","timestamp":0,"location":"kernel.rs:500","message":"Returned from finish_and_yield","data":{{}},"sessionId":"debug-session","runId":"post-fix","hypothesisId":"A,C"}}"#);
-        }
         return;
-    }
-    
-    {
-        crate::pl011_println!(r#"{{"id":"log_finish_current_not_found","timestamp":0,"location":"kernel.rs:477","message":"Global kernel not found","data":{{}},"sessionId":"debug-session","runId":"post-fix","hypothesisId":"A,C"}}"#);
     }
 }

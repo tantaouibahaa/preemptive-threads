@@ -2,11 +2,11 @@
 name = "preemptive-threads"
 version = "0.6.0"
 edition = "2021"
-rust-version = "1.70"
+rust-version = "1.88"
 authors = ["Nathan Ryver <tantaouisoftware@gmail.com>"]
 description = "Bare-metal preemptive multithreading for Raspberry Pi Zero 2 W (ARM Cortex-A53)"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/NathanVRyver/preemptive-threads"
+repository = "https://github.com/tantaouibahaa/preemptive-threads"
 keywords = ["threading", "no-std", "raspberry-pi", "bare-metal", "arm64"]
 categories = ["no-std", "os", "embedded", "concurrency"]
 readme = "README.md"

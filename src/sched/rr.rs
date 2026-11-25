@@ -38,18 +38,12 @@ struct QueueNode {
 
 impl Scheduler for FirstComeFirstServeScheduler {
     fn enqueue(&self, thread: ReadyRef) {
-        let tid = thread.id().get();
-        crate::pl011_println!("[FCFS] enqueue: thread {} (queue before: {:?})", tid, self.queue.debug_list_threads());
         self.queue.push(thread);
-        crate::pl011_println!("[FCFS] enqueue done: (queue after: {:?})", self.queue.debug_list_threads());
         self.runnable_threads.fetch_add(1, Ordering::AcqRel);
     }
 
     fn pick_next(&self, _cpu_id: CpuId) -> Option<ReadyRef> {
-        crate::pl011_println!("[FCFS] pick_next: (queue before: {:?})", self.queue.debug_list_threads());
         let thread = self.queue.try_pop()?;
-        let tid = thread.id().get();
-        crate::pl011_println!("[FCFS] pick_next: got thread {} (queue after: {:?})", tid, self.queue.debug_list_threads());
         self.runnable_threads.fetch_sub(1, Ordering::AcqRel);
         Some(thread)
     }
@@ -296,20 +290,6 @@ impl LockFreeQueue {
         }
     }
 
-    fn debug_list_threads(&self) -> alloc::vec::Vec<usize> {
-        let mut ids = alloc::vec::Vec::new();
-        let head = self.head.load(Ordering::Acquire);
-        let mut current = unsafe { (*head).next.load(Ordering::Acquire) };
-        while !current.is_null() {
-            if let Some(ref thread) = unsafe { &(*current).thread } {
-                ids.push(thread.id().get());
-            } else {
-                ids.push(0);
-            }
-            current = unsafe { (*current).next.load(Ordering::Acquire) };
-        }
-        ids
-    }
 
     fn push(&self, thread: ReadyRef) {
         let new_node = Box::into_raw(Box::new(QueueNode {

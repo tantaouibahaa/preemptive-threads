@@ -52,7 +52,6 @@ pub mod arch;
 pub mod errors;
 pub mod kernel;
 pub mod mem;
-pub mod platform_timer;
 pub mod sched;
 pub mod thread;
 pub mod time;

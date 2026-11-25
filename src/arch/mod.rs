@@ -112,9 +112,6 @@ impl Arch for NoOpArch {
 // Raspberry Pi Zero 2 W - ARM64 only
 #[cfg(target_arch = "aarch64")]
 pub mod aarch64;
-#[cfg(not(target_arch = "aarch64"))]
-#[path = "aarch64_stub.rs"]
-pub mod aarch64;
 
 
 
@@ -132,10 +129,5 @@ pub mod uart_pl011;
 #[cfg(target_arch = "aarch64")]
 pub use aarch64::Aarch64Arch as DefaultArch;
 
-// For testing/std-shim on non-aarch64 hosts
-#[cfg(all(not(target_arch = "aarch64"), feature = "std-shim"))]
-pub use NoOpArch as DefaultArch;
-
-// Compile error for unsupported configurations
-#[cfg(all(not(target_arch = "aarch64"), not(feature = "std-shim")))]
-compile_error!("This library only supports Raspberry Pi Zero 2 W (aarch64). Use --target aarch64-unknown-none or enable std-shim feature for testing.");
+#[cfg(not(target_arch = "aarch64"))]
+compile_error!("preemptive-threads only supports aarch64 bare metal (--target aarch64-unknown-none).");

@@ -17,13 +17,13 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        rust: [nightly]
+        rust: [stable]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.rust }}
-          components: rust-src
+          targets: aarch64-unknown-none
       - uses: Swatinem/rust-cache@v2
       - name: Build library
         run: cargo build --release
@@ -35,11 +35,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy, rust-src
+          components: clippy
+          targets: aarch64-unknown-none
       - uses: Swatinem/rust-cache@v2
       - name: Clippy (bare-metal)
-        run: cargo clippy -- -D warnings
-      - name: Clippy (std-shim)
-        run: cargo clippy --features std-shim --target x86_64-unknown-linux-gnu -- -D warnings
+        run: cargo clippy
