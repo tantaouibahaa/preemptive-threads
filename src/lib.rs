@@ -1,126 +1,75 @@
 #![no_std]
 #![deny(unsafe_op_in_unsafe_fn)]
-#![forbid(unreachable_pub)]
+#![warn(missing_docs)]
 
-//! Bare-metal preemptive multithreading for Raspberry Pi Zero 2 W.
+//! Preemptive, SMP threading for bare-metal AArch64.
 //!
-//! This library provides preemptive multithreading for the Raspberry Pi Zero 2 W
-//! (ARM Cortex-A53, AArch64) running in bare-metal mode without an operating system.
+//! Runs on the Raspberry Pi Zero 2 W / Pi 3 (BCM2837, 4x Cortex-A53) and
+//! on QEMU (`raspi3b` and `virt` with the `qemu-virt` feature) with no
+//! operating system underneath.
 //!
-//! # Target Platform
+//! - Timer-driven preemption on all four cores, per-core run queues with
+//!   four priority bands, work stealing and reschedule IPIs.
+//! - Round-robin or FIFO policy within a band.
+//! - Blocking primitives: [`sync::Mutex`] (priority inheritance),
+//!   [`sync::Semaphore`], [`sync::Condvar`], bounded [`sync::channel`],
+//!   [`thread::sleep`] and [`thread::JoinHandle::join`] returning the
+//!   thread's value.
+//! - A real heap (`alloc` works), stack pooling and reclamation of
+//!   finished threads.
 //!
-//! - **Hardware**: Raspberry Pi Zero 2 W only
-//! - **SoC**: Broadcom BCM2837 (ARM Cortex-A53)
-//! - **Architecture**: AArch64 (ARM 64-bit)
-//! - **Environment**: Bare-metal (no operating system)
+//! # Using it
 //!
-//! # Features
-//!
-//! - `full-fpu`: Enable NEON/FPU save/restore (default)
-//! - `std-shim`: Enable compatibility layer for testing on host
-//!
-//! # Quick Start
+//! The crate owns the boot code, exception vectors, heap and panic handler.
+//! An application provides `kernel_main` and hands control to [`start`]:
 //!
 //! ```ignore
-//! use preemptive_threads::{Kernel, RoundRobinScheduler};
-//! use spin::Lazy;
+//! #![no_std]
+//! #![no_main]
+//! use preemptive_threads::{self as pt, println, thread, Config};
 //!
-//! static KERNEL: Lazy<Kernel<_, RoundRobinScheduler>> =
-//!     Lazy::new(|| Kernel::new(RoundRobinScheduler::new(1)));
+//! #[no_mangle]
+//! fn kernel_main() -> ! {
+//!     pt::start(Config::default(), app)
+//! }
 //!
-//! fn kernel_main() {
-//!     KERNEL.init().expect("Failed to initialize kernel");
-//!
-//!     KERNEL.spawn(|| {
-//!         loop { /* thread work */ }
-//!     }, 128).expect("Failed to spawn thread");
-//!
-//!     KERNEL.start_first_thread();
+//! fn app() {
+//!     let h = thread::spawn(|| 6 * 7);
+//!     println!("answer = {}", h.join());
 //! }
 //! ```
 //!
-//! # Architecture
-//!
-//! The library is organized around several key abstractions:
-//! - ARM64 context switching with full register save/restore
-//! - GIC-400 interrupt controller for timer interrupts
-//! - Round-robin scheduler with priority support
-//! - Safe memory management for thread stacks
-
-// Core modules
-pub mod arch;
-pub mod errors;
-pub mod kernel;
-pub mod mem;
-pub mod sched;
-pub mod thread;
-pub mod time;
-
-#[cfg(test)]
-extern crate std;
+//! Link with `rpi0w2.ld` (default) or `qemu_virt.ld` (`qemu-virt`
+//! feature); this crate's build script does that for its own examples.
 
 extern crate alloc;
 
-// Panic handler for bare-metal
-#[cfg(all(not(test), not(feature = "std-shim")))]
-use core::panic::PanicInfo;
+#[cfg(not(target_arch = "aarch64"))]
+compile_error!("preemptive-threads only supports bare-metal aarch64 (--target aarch64-unknown-none)");
 
-#[cfg(all(not(test), not(feature = "std-shim")))]
-#[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
-    // On panic, disable interrupts and halt
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        core::arch::asm!("msr daifset, #0xf", options(nomem, nostack));
-    }
-    loop {
-        #[cfg(target_arch = "aarch64")]
-        unsafe {
-            core::arch::asm!("wfe", options(nomem, nostack));
-        }
-    }
-}
+pub mod arch;
+#[macro_use]
+pub mod console;
+pub mod errors;
+mod kernel;
+pub mod mem;
+pub mod platform;
+pub mod sched;
+pub mod sync;
+pub mod thread;
+pub mod time;
 
-// ============================================================================
-// Public API
-// ============================================================================
-
-// Architecture abstraction
-pub use arch::{Arch, DefaultArch};
-
-// Kernel
-pub use kernel::Kernel;
-
-// Scheduler
-pub use sched::{RoundRobinScheduler, Scheduler};
-
-// Threads
-pub use thread::{JoinHandle, Thread, ThreadBuilder, ThreadId, ThreadState};
-
-// Memory management
-pub use mem::{Stack, StackPool, StackSizeClass};
-
-// Time
+pub use errors::SpawnError;
+pub use kernel::{boot_el, start, stats, Config, CpuStats, KernelStats};
+pub use sched::{priority, SchedPolicy, ThreadId, ThreadState};
+pub use thread::{current_cpu, current_thread_id, sleep, spawn, yield_now, Builder, JoinHandle, Thread};
 pub use time::{Duration, Instant};
 
-// Errors
-pub use errors::{ThreadError, ThreadResult, SpawnError};
-
-// ============================================================================
-// Convenience Functions
-// ============================================================================
-
-/// Yield the current thread's time slice to the scheduler.
-///
-/// This is a cooperative yield - the thread voluntarily gives up the CPU
-/// to allow other threads to run. The current thread remains runnable
-/// and will be scheduled again later.
-#[inline]
-pub fn yield_now() {
-    kernel::yield_current();
-}
-
-#[inline]
-pub fn finish_current() {
-    kernel::finish_current();
+#[panic_handler]
+fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
+    arch::irq_disable();
+    kernel::stop_other_cpus();
+    use core::fmt::Write;
+    let _ = writeln!(console::PanicWriter, "\n*** PANIC on cpu {}: {}", arch::cpu_id(), info);
+    arch::semihosting::exit(101)
 }

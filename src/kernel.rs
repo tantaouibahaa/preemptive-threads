@@ -1,395 +1,216 @@
+//! Kernel bring-up: boot entry points, configuration, interrupt dispatch
+//! and statistics.
 
+use crate::arch::{self, boot};
+use crate::platform::{self, Irq, MAX_CPUS};
+use crate::sched::percpu::{self, this_cpu, PERCPU};
+use crate::sched::{self, SchedPolicy};
+use crate::thread::Builder;
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 
-use crate::arch::Arch;
-use crate::sched::Scheduler;
-use crate::thread::{JoinHandle, ReadyRef, RunningRef, Thread, ThreadId};
-use crate::mem::{StackPool, StackSizeClass};
-use crate::errors::SpawnError;
-use core::marker::PhantomData;
-use portable_atomic::{AtomicBool, AtomicUsize, AtomicPtr, Ordering};
-use alloc::boxed::Box;
-
-static GLOBAL_KERNEL: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
-
-pub struct Kernel<A: Arch, S: Scheduler> {
-    scheduler: S,
-    stack_pool: StackPool,
-    _arch: PhantomData<A>,
-    initialized: AtomicBool,
-    next_thread_id: AtomicUsize,
-    current_thread: spin::Mutex<Option<RunningRef>>,
+/// Kernel configuration passed to [`start`].
+#[derive(Debug, Clone, Copy)]
+pub struct Config {
+    /// Scheduling policy within a priority band.
+    pub policy: SchedPolicy,
+    /// Timer interrupt frequency per core.
+    pub tick_hz: u32,
+    /// Round-robin time slice, in ticks.
+    pub time_slice_ticks: u32,
+    /// Number of cores to bring up (1-4).
+    pub cpus: usize,
 }
 
-impl<A: Arch, S: Scheduler> Kernel<A, S> {
-    pub const fn new(scheduler: S) -> Self {
-        Self {
-            scheduler,
-            stack_pool: StackPool::new(),
-            _arch: PhantomData,
-            initialized: AtomicBool::new(false),
-            next_thread_id: AtomicUsize::new(1),
-            current_thread: spin::Mutex::new(None),
+impl Default for Config {
+    /// Round-robin, 1 kHz tick, 10 ms slices, 4 cores.
+    fn default() -> Self {
+        Self { policy: SchedPolicy::RoundRobin, tick_hz: 1000, time_slice_ticks: 10, cpus: MAX_CPUS }
+    }
+}
+
+static BOOT_EL: AtomicU8 = AtomicU8::new(0);
+static STARTED: AtomicBool = AtomicBool::new(false);
+static PANICKED: AtomicBool = AtomicBool::new(false);
+static CONFIGURED_CPUS: AtomicUsize = AtomicUsize::new(1);
+
+/// Primary-core Rust entry, called from `_start` with the exception level
+/// the image was entered at.
+pub(crate) extern "C" fn boot_primary(boot_el: u64) -> ! {
+    BOOT_EL.store(boot_el as u8, Ordering::Relaxed);
+    percpu::init_this_cpu(0);
+    platform::early_init(boot_el as u8);
+    crate::mem::heap::init();
+    platform::irq_init_global();
+    platform::irq_init_cpu(0);
+    sched::init_idle_thread(&PERCPU[0]);
+    PERCPU[0].online.store(true, Ordering::Release);
+
+    extern "Rust" {
+        fn kernel_main() -> !;
+    }
+    // SAFETY: provided by the application (see the crate docs).
+    unsafe { kernel_main() }
+}
+
+/// Secondary-core Rust entry, called from `__pt_secondary_entry`.
+pub(crate) extern "C" fn boot_secondary(cpu: u64) -> ! {
+    let cpu = cpu as usize;
+    percpu::init_this_cpu(cpu);
+    platform::irq_init_cpu(cpu);
+    sched::init_idle_thread(&PERCPU[cpu]);
+    PERCPU[cpu].online.store(true, Ordering::Release);
+    sched::start_tick();
+    sched::idle_loop()
+}
+
+/// Exception level the kernel image was entered at (3, 2 or 1).
+pub fn boot_el() -> u8 {
+    BOOT_EL.load(Ordering::Relaxed)
+}
+
+/// Start the scheduler: spawn `main` as the first thread, bring up the
+/// secondary cores and turn the boot core into an idle core. Never returns.
+///
+/// Call it exactly once, from `kernel_main` on the boot core.
+pub fn start(config: Config, main: fn()) -> ! {
+    assert!(!STARTED.swap(true, Ordering::AcqRel), "kernel already started");
+    let cpus = config.cpus.clamp(1, MAX_CPUS);
+    let tick_period = (arch::timer::frequency() / config.tick_hz.max(1) as u64).max(1);
+    sched::configure(config.policy, config.time_slice_ticks, tick_period);
+    CONFIGURED_CPUS.store(cpus, Ordering::Relaxed);
+
+    Builder::new().name("main").spawn(main).expect("failed to spawn main thread");
+
+    for (cpu, pc) in PERCPU.iter().enumerate().take(cpus).skip(1) {
+        if !platform::start_cpu(cpu, boot::secondary_entry_addr()) {
+            crate::println!("[kernel] cpu{}: start request failed", cpu);
+            continue;
+        }
+        let deadline = arch::timer::counter() + arch::timer::frequency() / 2;
+        while !pc.online.load(Ordering::Acquire) && arch::timer::counter() < deadline {
+            core::hint::spin_loop();
+        }
+        if !pc.online.load(Ordering::Acquire) {
+            crate::println!("[kernel] cpu{}: did not come online", cpu);
         }
     }
 
-    pub fn init(&self) -> Result<(), ()> {
-        if self
-            .initialized
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-        {
-            Ok(())
-        } else {
-            Err(())
+    sched::start_tick();
+    sched::idle_loop()
+}
+
+/// IRQ dispatch, called from the IRQ vector on the per-core IRQ stack.
+pub(crate) extern "C" fn irq_dispatch() {
+    if PANICKED.load(Ordering::Relaxed) {
+        arch::halt();
+    }
+    platform::dispatch_irqs(|irq| match irq {
+        Irq::Timer => sched::on_tick(),
+        Irq::Reschedule => {
+            let cpu = this_cpu();
+            cpu.ipis.fetch_add(1, Ordering::Relaxed);
+            cpu.need_resched.store(true, Ordering::Relaxed);
+        }
+        Irq::Other(_) => {}
+    });
+    if PANICKED.load(Ordering::Relaxed) {
+        arch::halt();
+    }
+}
+
+/// Called from the IRQ vector after [`irq_dispatch`], on the interrupted
+/// thread's stack; may switch threads.
+pub(crate) extern "C" fn irq_exit() {
+    sched::irq_exit();
+}
+
+/// Stop the other cores after a panic.
+pub(crate) fn stop_other_cpus() {
+    PANICKED.store(true, Ordering::SeqCst);
+    let me = arch::cpu_id();
+    for c in PERCPU.iter() {
+        if c.id != me && c.online.load(Ordering::Acquire) {
+            platform::send_resched_ipi(c.id);
         }
     }
+}
 
-    pub fn is_initialized(&self) -> bool {
-        self.initialized.load(Ordering::Acquire)
+/// Counters for one core.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CpuStats {
+    /// Whether the core is online.
+    pub online: bool,
+    /// Timer ticks handled.
+    pub ticks: u64,
+    /// Ticks during which the core was idle.
+    pub idle_ticks: u64,
+    /// Thread switches.
+    pub context_switches: u64,
+    /// Switches forced by an interrupt (time slice or higher priority).
+    pub preemptions: u64,
+    /// Threads taken from other cores' run queues.
+    pub steals: u64,
+    /// Reschedule IPIs received.
+    pub ipis: u64,
+    /// Threads waiting in this core's run queue.
+    pub queued: usize,
+}
+
+/// Kernel-wide counters.
+#[derive(Debug, Clone, Copy)]
+pub struct KernelStats {
+    /// Per-core counters.
+    pub cpus: [CpuStats; MAX_CPUS],
+    /// Threads spawned since boot.
+    pub threads_spawned: u64,
+    /// Threads that exited and were reclaimed.
+    pub threads_reaped: u64,
+    /// Threads alive now (excluding idle threads).
+    pub threads_live: usize,
+    /// Heap usage.
+    pub heap: crate::mem::HeapStats,
+    /// Stack pool usage.
+    pub stacks: crate::mem::StackPoolStats,
+}
+
+impl KernelStats {
+    /// Number of online cores.
+    pub fn cpus_online(&self) -> usize {
+        self.cpus.iter().filter(|c| c.online).count()
     }
 
-    pub fn next_thread_id(&self) -> ThreadId {
-        let id = self.next_thread_id.fetch_add(1, Ordering::AcqRel);
-        unsafe { ThreadId::new_unchecked(id) }
+    /// Sum of context switches over all cores.
+    pub fn context_switches(&self) -> u64 {
+        self.cpus.iter().map(|c| c.context_switches).sum()
     }
 
-    /// Get a reference to the scheduler.
-    pub fn scheduler(&self) -> &S {
-        &self.scheduler
+    /// Sum of preemptions over all cores.
+    pub fn preemptions(&self) -> u64 {
+        self.cpus.iter().map(|c| c.preemptions).sum()
     }
+}
 
-
-    pub fn spawn<F>(&self, entry_point: F, priority: u8) -> Result<JoinHandle, SpawnError>
-    where
-        F: FnOnce() + Send + 'static,
-    {
-        if !self.is_initialized() {
-            return Err(SpawnError::NotInitialized);
-        }
-
-        let stack = self
-            .stack_pool
-            .allocate(StackSizeClass::Medium)
-            .ok_or(SpawnError::OutOfMemory)?;
-
-        let thread_id = self.next_thread_id();
-
-        let closure_box = Box::new(entry_point);
-        let closure_ptr = Box::into_raw(closure_box);
-
-        fn thread_trampoline<F: FnOnce() + Send + 'static>(closure_ptr: *mut F) {
-            crate::arch::DefaultArch::enable_interrupts();
-
-            let closure = unsafe { Box::from_raw(closure_ptr) };
-            closure();
-
-            
-            crate::kernel::finish_current();
-            
-            loop {
-                unsafe {
-                    core::arch::asm!("wfe", options(nomem, nostack));
-                }
-            }
-        }
-
-        let stack_bottom = stack.stack_bottom();
-
-        let entry_fn: fn() = || {};
-        let (thread, join_handle) = Thread::new(thread_id, stack, entry_fn, priority);
-
-        thread.setup_initial_context(
-            thread_trampoline::<F> as *const () as usize,
-            stack_bottom as usize,
-            closure_ptr as usize,
-        );
-
-        let ready_ref = ReadyRef(thread);
-        self.scheduler.enqueue(ready_ref);
-
-        Ok(join_handle)
-    }
-
-    /// Spawn a thread with a simple function pointer (no closure).
-    ///
-    /// This is simpler than spawn() and useful for threads that don't capture state.
-    pub fn spawn_fn(&self, entry_point: fn(), priority: u8) -> Result<JoinHandle, SpawnError> {
-        if !self.is_initialized() {
-            return Err(SpawnError::NotInitialized);
-        }
-
-        let stack = self
-            .stack_pool
-            .allocate(StackSizeClass::Small)
-            .ok_or(SpawnError::OutOfMemory)?;
-
-        let thread_id = self.next_thread_id();
-        let stack_bottom = stack.stack_bottom();
-
-        let (thread, join_handle) = Thread::new(thread_id, stack, entry_point, priority);
-
-        thread.setup_initial_context(entry_point as usize, stack_bottom as usize, 0);
-
-        let ready_ref = ReadyRef(thread);
-        self.scheduler.enqueue(ready_ref);
-
-        Ok(join_handle)
-    }
-
-    #[inline(never)]
-    pub fn finish_and_yield(&self) {
-        if !self.is_initialized() {
-            return;
-        }
-
-        A::disable_interrupts();
-
-        let mut current_guard = self.current_thread.lock();
-
-        if let Some(current) = current_guard.take() {
-            let prev_ctx = current.0.context_ptr();
-
-            current.0.set_state(crate::thread::ThreadState::Finished);
-
-            {
-                let _ = current;
-            }
-            if let Some(next) = self.scheduler.pick_next(0) {
-                let next_ctx = next.0.context_ptr();
-                let running = next.start_running();
-                *current_guard = Some(running);
-                drop(current_guard);
-
-                if !prev_ctx.is_null() && !next_ctx.is_null() {
-                    unsafe {
-                        A::context_switch(
-                            prev_ctx as *mut A::SavedContext,
-                            next_ctx as *const A::SavedContext,
-                        );
-                    }
-                    A::enable_interrupts();
-                } else {
-                    A::enable_interrupts();
-                }
-            } else {
-                A::enable_interrupts();
-            }
-        } else {
-            drop(current_guard);
-            A::enable_interrupts();
-        }
-    }
-
-    #[inline(never)]
-    pub fn yield_now(&self) {
-        if !self.is_initialized() {
-            return;
-        }
-
-        A::disable_interrupts();
-
-        let mut current_guard = self.current_thread.lock();
-
-        if let Some(current) = current_guard.take() {
-            let prev_ctx = current.0.context_ptr();
-
-            let ready = current.stop_running();
-            self.scheduler.enqueue(ready);
-
-            if let Some(next) = self.scheduler.pick_next(0) {
-                let next_ctx = next.0.context_ptr();
-                let running = next.start_running();
-                *current_guard = Some(running);
-                drop(current_guard);
-
-
-                if !prev_ctx.is_null() && !next_ctx.is_null() {
-                    unsafe {
-                        A::context_switch(
-                            prev_ctx as *mut A::SavedContext,
-                            next_ctx as *const A::SavedContext,
-                        );
-                    }
-                    A::enable_interrupts();
-                } else {
-                    A::enable_interrupts();
-                }
-            } else {
-                A::enable_interrupts();
-            }
-        } else {
-            drop(current_guard);
-            A::enable_interrupts();
-        }
-    }
-
-    /// Start the first thread (bootstrap the scheduler).
-    ///
-    /// This picks the first thread from the scheduler and starts running it.
-    /// Called once during kernel initialization.
-    ///
-    /// Note: This function handles interrupt enabling internally - do NOT enable
-    /// interrupts before calling this function.
-    #[inline(never)]
-    pub fn start_first_thread(&self) {
-        if !self.is_initialized() {
-            return;
-        }
-
-        A::disable_interrupts();
-
-        let mut current_guard = self.current_thread.lock();
-
-        if current_guard.is_some() {
-            A::enable_interrupts();
-            return;
-        }
-
-        if let Some(next) = self.scheduler.pick_next(0) {
-            let next_ctx = next.0.context_ptr();
-
-            let running = next.start_running();
-            *current_guard = Some(running);
-            drop(current_guard);
-
-            #[cfg(target_arch = "aarch64")]
-            unsafe {
-                crate::arch::aarch64::set_current_irq_context(
-                    next_ctx
-                );
-            }
-
-
-            if !next_ctx.is_null() {
-                unsafe {
-                    let mut dummy_ctx = A::SavedContext::default();
-                    A::context_switch(
-                        &mut dummy_ctx as *mut A::SavedContext,
-                        next_ctx as *const A::SavedContext,
-                    );
-                }
-            }
-        } else {
-            A::enable_interrupts();
-        }
-    }
-
-    /// Handle preemption from an IRQ context.
-    ///
-    /// This method is called from the timer interrupt handler. Instead of doing
-    /// a context_switch (which doesn't work from interrupt context), it updates
-    /// the IRQ_LOAD_CTX pointer so that the IRQ handler's return sequence
-    /// restores the new thread's context.
-    ///
-    /// # Safety
-    ///
-    /// Must be called from an IRQ handler with interrupts disabled.
-    /// The IRQ handler must have saved the current context to IRQ_SAVE_CTX.
-    #[cfg(target_arch = "aarch64")]
-    pub fn handle_irq_preemption(&self) {
-        if !self.is_initialized() {
-            return;
-        }
-
-        let mut current_guard = match self.current_thread.try_lock() {
-            Some(guard) => guard,
-            None => return,
+/// Snapshot of the kernel counters.
+pub fn stats() -> KernelStats {
+    let mut cpus = [CpuStats::default(); MAX_CPUS];
+    for (s, c) in cpus.iter_mut().zip(PERCPU.iter()) {
+        *s = CpuStats {
+            online: c.online.load(Ordering::Acquire),
+            ticks: c.ticks.load(Ordering::Relaxed),
+            idle_ticks: c.idle_ticks.load(Ordering::Relaxed),
+            context_switches: c.switches.load(Ordering::Relaxed),
+            preemptions: c.preemptions.load(Ordering::Relaxed),
+            steals: c.steals.load(Ordering::Relaxed),
+            ipis: c.ipis.load(Ordering::Relaxed),
+            queued: c.nr_queued.load(Ordering::Relaxed),
         };
-
-        if let Some(ref _current) = *current_guard {
-            let should_switch = true;
-
-            if should_switch {
-                if let Some(current) = current_guard.take() {
-
-
-                    let old_id = current.id().get();
-
-                    let ready = current.stop_running();
-                    self.scheduler.enqueue(ready);
-
-                    if let Some(next) = self.scheduler.pick_next(0) {
-                        let next_ctx = next.0.context_ptr();
-                        let _old_id = old_id; // Suppress unused warning
-                        let _new_id = next.id().get();
-
-                        let running = next.start_running();
-                        *current_guard = Some(running);
-                        drop(current_guard);
-
-                        if !next_ctx.is_null() {
-                            crate::arch::aarch64::set_irq_load_context(
-                                next_ctx
-                            );
-                            unsafe {
-                                crate::arch::aarch64::set_current_irq_context(
-                                    next_ctx
-                                );
-                            }
-                        }
-                    } else {
-                        drop(current_guard);
-                    }
-                }
-            }
-        } else {
-            drop(current_guard);
-        }
     }
-
-    pub fn thread_stats(&self) -> (usize, usize, usize) {
-        self.scheduler.stats()
-    }
-    /// # Safety
-    ///
-    /// This function stores a raw pointer to `self` in a global `AtomicPtr`.
-    /// TODO:  try to find another way
-    pub unsafe fn register_global(&'static self) {
-        GLOBAL_KERNEL.store(self as *const _ as *mut (), Ordering::Release);
-    }
-}
-
-
-
-unsafe impl<A: Arch, S: Scheduler> Send for Kernel<A, S> {}
-unsafe impl<A: Arch, S: Scheduler> Sync for Kernel<A, S> {}
-
-/// Get the global kernel reference (for interrupt handlers).
-///
-/// Returns None if no kernel has been registered.
-pub fn get_global_kernel<A: Arch, S: Scheduler>() -> Option<&'static Kernel<A, S>> {
-    let ptr = GLOBAL_KERNEL.load(Ordering::Acquire);
-    if ptr.is_null() {
-        None
-    } else {
-        Some(unsafe { &*(ptr as *const Kernel<A, S>) })
-    }
-}
-
-/// Yield the current thread (convenience function).
-///
-/// This uses the global kernel if registered, otherwise does nothing.
-pub fn yield_current() {
-    use crate::arch::DefaultArch;
-    use crate::sched::RoundRobinScheduler;
-
-    if let Some(kernel) = get_global_kernel::<DefaultArch, RoundRobinScheduler>() {
-        kernel.yield_now();
-    }
-}
-
-pub fn finish_current() {
-    use crate::arch::DefaultArch;
-    use crate::sched::RoundRobinScheduler;
-    use crate::sched::FirstComeFirstServeScheduler;
-
-    if let Some(kernel) = get_global_kernel::<DefaultArch, FirstComeFirstServeScheduler>() {
-        kernel.finish_and_yield();
-        return;
-    }
-    
-    if let Some(kernel) = get_global_kernel::<DefaultArch, RoundRobinScheduler>() {
-        kernel.finish_and_yield();
-        return;
+    KernelStats {
+        cpus,
+        threads_spawned: sched::SPAWNED.load(Ordering::Relaxed),
+        threads_reaped: sched::REAPED.load(Ordering::Relaxed),
+        threads_live: sched::LIVE_THREADS.load(Ordering::Relaxed),
+        heap: crate::mem::heap_stats(),
+        stacks: sched::STACKS.stats(),
     }
 }

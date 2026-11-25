@@ -1,227 +1,131 @@
-//! Preemptive Multithreading Kernel for Raspberry Pi Zero 2 W
+//! Demo kernel for the Raspberry Pi Zero 2 W (also runs on QEMU `raspi3b`,
+//! and on QEMU `virt` with `--features qemu-virt`).
 //!
-//! This example demonstrates true preemptive multithreading on bare metal ARM64.
-//! Three threads run concurrently, switched automatically by timer interrupts.
+//! - four unpinned worker threads count primes and report which core ran
+//!   them, sharing a `Mutex`-protected total;
+//! - a producer/consumer pair talks over a bounded channel;
+//! - a monitor thread prints per-core statistics every second;
+//! - on the Pi, a thread blinks the green ACT LED (GPIO 29) at 2 Hz, so
+//!   you can see the scheduler running even without a serial cable.
 //!
-//! # Quick Test (QEMU)
-//!
-//! ```bash
-//! make test-virt
-//! ```
-//!
-//! # Building for Real Hardware
-//!
-//! ```bash
-//! cargo +nightly build --release --example rpi_kernel --target aarch64-unknown-none
-//! rust-objcopy -O binary target/aarch64-unknown-none/release/examples/rpi_kernel kernel8.img
-//! ```
-//!
-//! # Deploying to Raspberry Pi Zero 2 W
-//!
-//! 1. Format SD card as FAT32
-//! 2. Copy to SD card:
-//!    - `kernel8.img` (your kernel)
-//!    - `bootcode.bin`, `start.elf`, `fixup.dat` (from RPi firmware)
-//! 3. Create `config.txt`:
-//!    ```
-//!    arm_64bit=1
-//!    kernel=kernel8.img
-//!    ```
-//! 4. Wire serial: GPIO14→RX, GPIO15→TX, GND→GND
-//! 5. Connect: `screen /dev/tty.usbserial* 115200`
-//! 6. Power on and watch the threads run!
+//! Build `kernel8.img` with `make kernel8.img` and see the README for how
+//! to put it on an SD card.
 
 #![no_std]
 #![no_main]
 
-extern crate alloc;
+use preemptive_threads::sync::{channel, Mutex};
+use preemptive_threads::{self as pt, priority, println, thread, Builder, Config, Duration, Instant};
 
-use preemptive_threads::{
-    arch::DefaultArch,
-    sched::RoundRobinScheduler,
-    pl011_println,
-    Kernel,
-};
-use spin::Lazy;
-
-/// Simple bump allocator for the heap.
-mod allocator {
-    use core::alloc::{GlobalAlloc, Layout};
-    use core::cell::UnsafeCell;
-    use core::ptr::null_mut;
-    use core::sync::atomic::{AtomicUsize, Ordering};
-
-    const HEAP_SIZE: usize = 16 * 1024 * 1024; // 16 MB
-
-    #[repr(C, align(16))]
-    struct Heap {
-        data: UnsafeCell<[u8; HEAP_SIZE]>,
-        next: AtomicUsize,
-    }
-
-    unsafe impl Sync for Heap {}
-
-    static HEAP: Heap = Heap {
-        data: UnsafeCell::new([0; HEAP_SIZE]),
-        next: AtomicUsize::new(0),
-    };
-
-    pub struct BumpAllocator;
-
-    unsafe impl GlobalAlloc for BumpAllocator {
-        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-            let size = layout.size();
-            let align = layout.align();
-
-            loop {
-                let current = HEAP.next.load(Ordering::Relaxed);
-                let aligned = (current + align - 1) & !(align - 1);
-                let new_next = aligned + size;
-
-                if new_next > HEAP_SIZE {
-                    return null_mut();
-                }
-
-                if HEAP
-                    .next
-                    .compare_exchange(current, new_next, Ordering::Relaxed, Ordering::Relaxed)
-                    .is_ok()
-                {
-                    let heap_start = HEAP.data.get() as *mut u8;
-                    return heap_start.add(aligned);
-                }
-            }
-        }
-
-        unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {
-            // Bump allocator doesn't support deallocation
-        }
-    }
-
-    #[global_allocator]
-    static ALLOCATOR: BumpAllocator = BumpAllocator;
+#[no_mangle]
+fn kernel_main() -> ! {
+    println!();
+    println!("========================================");
+    println!(" preemptive-threads {} demo", env!("CARGO_PKG_VERSION"));
+    println!(" board: {}  (entered at EL{})", pt::platform::NAME, pt::boot_el());
+    println!("========================================");
+    pt::start(Config::default(), main)
 }
 
-/// The kernel instance.
-static KERNEL: Lazy<Kernel<DefaultArch, RoundRobinScheduler>> =
-    Lazy::new(|| Kernel::new(RoundRobinScheduler::new(1)));
+static PRIMES: Mutex<u64> = Mutex::new(0);
 
-/// Kernel entry point - called from boot code after hardware init.
-#[no_mangle]
-pub fn kernel_main() -> ! {
-    // Initialize PL011 UART first so we can see output
-    // PL011 works on both real hardware and QEMU raspi3b (-serial stdio)
-    unsafe {
-        preemptive_threads::arch::uart_pl011::init();
-    }
+fn is_prime(n: u64) -> bool {
+    n >= 2 && (2..).take_while(|d| d * d <= n).all(|d| !n.is_multiple_of(d))
+}
 
-    pl011_println!("");
-    pl011_println!("========================================");
-    pl011_println!("  Preemptive Threads Kernel v0.6.0");
-    pl011_println!("  Raspberry Pi Zero 2 W");
-    pl011_println!("========================================");
-    pl011_println!("");
+fn main() {
+    println!("[main] {} cores online", pt::stats().cpus_online());
 
-    // Initialize the kernel
-    pl011_println!("[BOOT] Initializing kernel... [RPI]");
-    KERNEL.init().expect("Failed to initialize kernel");
-    pl011_println!("[BOOT] Kernel initialized!");
+    #[cfg(not(feature = "qemu-virt"))]
+    Builder::new().name("led").priority(priority::HIGH).spawn(led::blink).unwrap();
 
-    // Register kernel globally for interrupt handlers
-    unsafe {
-        KERNEL.register_global();
-    }
-    pl011_println!("[BOOT] Kernel registered globally");
+    Builder::new().name("monitor").priority(priority::HIGH).spawn(monitor).unwrap();
 
-    // Spawn Thread 1
-    pl011_println!("[BOOT] Spawning threads...");
-    KERNEL
-        .spawn(
-            || {
-                pl011_println!("[Thread 1] Started!");
-                let mut counter = 0u64;
-                loop {
-                    counter = counter.wrapping_add(1);
-                    if counter % 5_000_000 == 0 {
-                        pl011_println!("[Thread 1] counter = {}", counter);
+    let (tx, rx) = channel::<u64>(8);
+    Builder::new().name("producer").spawn(move || {
+        let mut n = 0u64;
+        loop {
+            tx.send(n).unwrap();
+            n += 1;
+            thread::sleep(Duration::from_millis(250));
+        }
+    }).unwrap();
+    Builder::new().name("consumer").spawn(move || {
+        while let Ok(n) = rx.recv() {
+            if n % 8 == 0 {
+                println!("[consumer] received message #{} on cpu{}", n, thread::current_cpu());
+            }
+        }
+    }).unwrap();
+
+    for id in 0..4u64 {
+        Builder::new().name("worker").spawn(move || {
+            let mut n = 1_000_000 * (id + 1);
+            loop {
+                let t = Instant::now();
+                let mut found = 0;
+                while t.elapsed() < Duration::from_secs(2) {
+                    if is_prime(n) {
+                        found += 1;
                     }
-                    // Small busy loop to simulate work
-                    for _ in 0..100 {
-                        core::hint::spin_loop();
-                    }
+                    n += 1;
                 }
-            },
-            128, // Normal priority
-        )
-        .expect("Failed to spawn thread 1");
-
-    // Spawn Thread 2
-    KERNEL
-        .spawn(
-            || {
-                pl011_println!("[Thread 2] Started!");
-                let mut counter = 0u64;
-                loop {
-                    counter = counter.wrapping_add(1);
-                    if counter % 5_000_000 == 0 {
-                        pl011_println!("[Thread 2] counter = {}", counter);
-                    }
-                    for _ in 0..100 {
-                        core::hint::spin_loop();
-                    }
-                }
-            },
-            128, // Normal priority
-        )
-        .expect("Failed to spawn thread 2");
-
-    // Spawn Thread 3 (lower priority - will run when higher priority threads idle)
-    KERNEL
-        .spawn(
-            || {
-                pl011_println!("[Thread 3] Started!");
-                let mut counter = 0u64;
-                loop {
-                    counter = counter.wrapping_add(1);
-                    if counter % 5_000_000 == 0 {
-                        pl011_println!("[Thread 3] counter = {}", counter);
-                    }
-                    for _ in 0..100 {
-                        core::hint::spin_loop();
-                    }
-                }
-            },
-            128, // Same priority as others for fair round-robin
-        )
-        .expect("Failed to spawn thread 3");
-    pl011_println!("[BOOT] 3 threads spawned!");
-
-    // Set up the preemption timer (1ms time slices)
-    pl011_println!("[BOOT] Setting up preemption timer (1ms)...");
-    unsafe {
-        preemptive_threads::arch::aarch64::setup_preemption_timer(1000)
-            .expect("Failed to setup timer");
+                let total = {
+                    let mut p = PRIMES.lock();
+                    *p += found;
+                    *p
+                };
+                println!(
+                    "[worker {}] cpu{}: +{} primes (total {}), cores used so far {:#06b}",
+                    id,
+                    thread::current_cpu(),
+                    found,
+                    total,
+                    thread::current().cpus_ran()
+                );
+            }
+        }).unwrap();
     }
-    pl011_println!("[BOOT] Timer configured!");
+}
 
-    // NOTE: Do NOT enable interrupts here - start_first_thread() handles that
-    // after setting up the current thread. This prevents an IRQ from firing
-    // before we have a thread context to save to.
-
-    pl011_println!("");
-    pl011_println!("[BOOT] Starting scheduler - threads will now run!");
-    pl011_println!("========================================");
-    pl011_println!("");
-
-    // Start running the first thread - this never returns
-    // (also enables interrupts after setting up the thread context)
-    KERNEL.start_first_thread();
-
-    // If we somehow get here, halt
-    pl011_println!("[ERROR] Scheduler returned unexpectedly!");
+fn monitor() {
     loop {
+        thread::sleep(Duration::from_secs(1));
+        let s = pt::stats();
+        println!(
+            "[monitor] uptime {:>4}s  switches {:>7}  preemptions {:>5}  threads {}  heap {} KiB",
+            pt::time::uptime().as_secs(),
+            s.context_switches(),
+            s.preemptions(),
+            s.threads_live,
+            s.heap.used / 1024
+        );
+    }
+}
+
+#[cfg(not(feature = "qemu-virt"))]
+mod led {
+    use core::ptr::write_volatile;
+    use preemptive_threads::{thread, Duration};
+
+    const GPFSEL2: usize = 0x3f20_0008;
+    const GPSET0: usize = 0x3f20_001c;
+    const GPCLR0: usize = 0x3f20_0028;
+    const ACT_LED: u32 = 29; // Pi Zero 2 W activity LED
+
+    pub fn blink() {
+        // SAFETY: GPIO MMIO; only pin 29's function bits are changed.
         unsafe {
-            core::arch::asm!("wfe");
+            let sel = core::ptr::read_volatile(GPFSEL2 as *const u32);
+            write_volatile(GPFSEL2 as *mut u32, (sel & !(7 << 27)) | (1 << 27));
+        }
+        loop {
+            // SAFETY: set/clear registers only affect pin 29.
+            unsafe { write_volatile(GPSET0 as *mut u32, 1 << ACT_LED) };
+            thread::sleep(Duration::from_millis(250));
+            // SAFETY: as above.
+            unsafe { write_volatile(GPCLR0 as *mut u32, 1 << ACT_LED) };
+            thread::sleep(Duration::from_millis(250));
         }
     }
 }

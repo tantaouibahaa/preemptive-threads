@@ -1,133 +1,115 @@
-//! Architecture abstraction layer for context switching and interrupt handling.
+//! AArch64 CPU support: boot, MMU, exception vectors, context switching,
+//! the generic timer and semihosting.
 //!
-//! This module provides a unified interface for architecture-specific operations
-//! that need to be implemented for each supported CPU architecture.
+//! Everything in here is specific to ARMv8-A running at EL1. Board-specific
+//! code (interrupt controller, UART, secondary-core release) lives in
+//! [`crate::platform`].
 
-// PhantomData import not needed yet
-// use core::marker::PhantomData;
+pub mod boot;
+pub mod context;
+pub mod mmu;
+pub mod semihosting;
+pub mod timer;
+pub mod vectors;
 
-/// Architecture abstraction trait.
-///
-/// This trait must be implemented for each supported CPU architecture to provide
-/// context switching, interrupt handling, and FPU management capabilities.
-///
-/// # Safety
-///
-/// Implementations of this trait involve direct hardware manipulation and
-/// inline assembly. All methods marked as unsafe have specific preconditions
-/// that must be upheld by the caller.
-pub trait Arch {
-    /// Architecture-specific saved context type.
-    ///
-    /// This type must contain all CPU registers and state needed to fully
-    /// restore a thread's execution context.
-    type SavedContext: Send + Sync + Default;
+use core::arch::asm;
 
-    /// Switch from one thread context to another.
-    ///
-    /// # Safety
-    ///
-    /// - `prev` must point to a valid, properly aligned SavedContext
-    /// - `next` must point to a valid, properly aligned SavedContext  
-    /// - The caller must ensure the memory pointed to by both pointers remains
-    ///   valid for the duration of this call
-    /// - Must be called with interrupts disabled
-    /// - The `next` context must represent a valid execution state
-    unsafe fn context_switch(prev: *mut Self::SavedContext, next: *const Self::SavedContext);
+/// Saved interrupt mask state returned by [`irq_save`].
+pub type IrqState = u64;
 
-    /// Save floating point unit state to the given context.
-    ///
-    /// # Safety
-    ///
-    /// - `ctx` must point to a valid, properly aligned SavedContext
-    /// - Must be called when the current thread owns the FPU
-    /// - The context must have sufficient space for FPU state
-    #[cfg(feature = "full-fpu")]
-    unsafe fn save_fpu(ctx: &mut Self::SavedContext);
-
-    /// Restore floating point unit state from the given context.
-    ///
-    /// # Safety
-    ///
-    /// - `ctx` must contain valid FPU state
-    /// - Must be called before the thread uses FPU instructions
-    /// - The current thread must be the owner of the FPU
-    #[cfg(feature = "full-fpu")]
-    unsafe fn restore_fpu(ctx: &Self::SavedContext);
-
-    /// Enable interrupts on the current CPU.
-    ///
-    /// This function re-enables interrupt delivery, allowing preemption
-    /// and timer interrupts to occur.
-    fn enable_interrupts();
-
-    /// Disable interrupts on the current CPU.
-    ///
-    /// This function prevents interrupt delivery, creating a critical section
-    /// where the current thread cannot be preempted.
-    fn disable_interrupts();
-
-    /// Check if interrupts are currently enabled.
-    ///
-    /// Returns `true` if interrupts are enabled, `false` otherwise.
-    fn interrupts_enabled() -> bool;
+/// Index of the calling core (MPIDR_EL1.Aff0).
+#[inline(always)]
+pub fn cpu_id() -> usize {
+    let mpidr: u64;
+    // SAFETY: reading MPIDR_EL1 has no side effects.
+    unsafe { asm!("mrs {}, mpidr_el1", out(reg) mpidr, options(nomem, nostack, preserves_flags)) };
+    (mpidr & 0xff) as usize
 }
 
-/// A no-op architecture implementation for testing and fallback purposes.
+/// Mask IRQs on this core and return the previous DAIF value.
 ///
-/// This implementation provides stub functionality and should not be used
-/// in production code where real context switching is required.
-pub struct NoOpArch;
-
-impl Arch for NoOpArch {
-    type SavedContext = ();
-
-    unsafe fn context_switch(_prev: *mut Self::SavedContext, _next: *const Self::SavedContext) {
-        // No-op for testing
-    }
-
-    #[cfg(feature = "full-fpu")]
-    unsafe fn save_fpu(_ctx: &mut Self::SavedContext) {
-        // No-op for testing  
-    }
-
-    #[cfg(feature = "full-fpu")]
-    unsafe fn restore_fpu(_ctx: &Self::SavedContext) {
-        // No-op for testing
-    }
-
-    fn enable_interrupts() {
-        // No-op for testing
-    }
-
-    fn disable_interrupts() {
-        // No-op for testing
-    }
-
-    fn interrupts_enabled() -> bool {
-        true
-    }
+/// Acts as a compiler barrier: memory accesses are not moved across it.
+#[inline(always)]
+pub fn irq_save() -> IrqState {
+    let daif: u64;
+    // SAFETY: masking IRQs is always allowed at EL1.
+    unsafe { asm!("mrs {}, daif", "msr daifset, #2", out(reg) daif, options(nostack, preserves_flags)) };
+    daif
 }
 
-// Raspberry Pi Zero 2 W - ARM64 only
-#[cfg(target_arch = "aarch64")]
-pub mod aarch64;
+/// Restore a DAIF value previously returned by [`irq_save`].
+#[inline(always)]
+pub fn irq_restore(state: IrqState) {
+    // SAFETY: restores a value read from DAIF earlier on this core.
+    unsafe { asm!("msr daif, {}", in(reg) state, options(nostack, preserves_flags)) };
+}
 
+/// Unmask IRQs on this core.
+#[inline(always)]
+pub fn irq_enable() {
+    // SAFETY: unmasking IRQs is always allowed at EL1.
+    unsafe { asm!("msr daifclr, #2", options(nostack, preserves_flags)) };
+}
 
+/// Mask IRQs on this core.
+#[inline(always)]
+pub fn irq_disable() {
+    // SAFETY: masking IRQs is always allowed at EL1.
+    unsafe { asm!("msr daifset, #2", options(nostack, preserves_flags)) };
+}
 
-// RPi Zero 2 W specific hardware support
-#[cfg(target_arch = "aarch64")]
-pub mod aarch64_gic;
-#[cfg(target_arch = "aarch64")]
-pub mod aarch64_vectors;
-#[cfg(target_arch = "aarch64")]
-pub mod aarch64_boot;
-#[cfg(target_arch = "aarch64")]
-pub mod uart_pl011;
+/// Whether IRQs are currently unmasked on this core.
+#[inline(always)]
+pub fn irqs_enabled() -> bool {
+    let daif: u64;
+    // SAFETY: reading DAIF has no side effects.
+    unsafe { asm!("mrs {}, daif", out(reg) daif, options(nomem, nostack, preserves_flags)) };
+    daif & (1 << 7) == 0
+}
 
-// Always use AArch64 - single target (Raspberry Pi Zero 2 W)
-#[cfg(target_arch = "aarch64")]
-pub use aarch64::Aarch64Arch as DefaultArch;
+/// Wait for interrupt.
+#[inline(always)]
+pub fn wfi() {
+    // SAFETY: WFI only suspends the core until an interrupt is pending.
+    unsafe { asm!("wfi", options(nomem, nostack, preserves_flags)) };
+}
 
-#[cfg(not(target_arch = "aarch64"))]
-compile_error!("preemptive-threads only supports aarch64 bare metal (--target aarch64-unknown-none).");
+/// Wait for event.
+#[inline(always)]
+pub fn wfe() {
+    // SAFETY: WFE only suspends the core until an event.
+    unsafe { asm!("wfe", options(nomem, nostack, preserves_flags)) };
+}
+
+/// Send event to all cores.
+#[inline(always)]
+pub fn sev() {
+    // SAFETY: SEV only signals an event.
+    unsafe { asm!("dsb sy", "sev", options(nostack, preserves_flags)) };
+}
+
+/// Clean and invalidate the data cache line containing `addr` to the point
+/// of coherency. Needed when handing data to a core whose MMU is still off.
+#[inline(always)]
+pub fn dcache_clean_inval(addr: usize) {
+    // SAFETY: cache maintenance by VA is harmless on mapped addresses.
+    unsafe { asm!("dc civac, {}", "dsb sy", in(reg) addr, options(nostack, preserves_flags)) };
+}
+
+/// Current exception level (0-3).
+#[inline(always)]
+pub fn current_el() -> u8 {
+    let el: u64;
+    // SAFETY: reading CurrentEL has no side effects.
+    unsafe { asm!("mrs {}, CurrentEL", out(reg) el, options(nomem, nostack, preserves_flags)) };
+    ((el >> 2) & 3) as u8
+}
+
+/// Mask all exceptions and stop this core forever.
+pub fn halt() -> ! {
+    // SAFETY: masking exceptions at EL1 is always allowed.
+    unsafe { asm!("msr daifset, #0xf", options(nomem, nostack, preserves_flags)) };
+    loop {
+        wfe();
+    }
+}

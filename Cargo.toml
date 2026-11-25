@@ -1,30 +1,29 @@
 [package]
 name = "preemptive-threads"
-version = "0.6.0"
+version = "1.0.0"
 edition = "2021"
 rust-version = "1.88"
 authors = ["Nathan Ryver <tantaouisoftware@gmail.com>"]
-description = "Bare-metal preemptive multithreading for Raspberry Pi Zero 2 W (ARM Cortex-A53)"
+description = "Bare-metal preemptive SMP threading for AArch64 (Raspberry Pi Zero 2 W and QEMU virt)"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/tantaouibahaa/preemptive-threads"
-keywords = ["threading", "no-std", "raspberry-pi", "bare-metal", "arm64"]
-categories = ["no-std", "os", "embedded", "concurrency"]
+keywords = ["threading", "no-std", "raspberry-pi", "bare-metal", "aarch64"]
+categories = ["no-std", "embedded", "concurrency", "os"]
 readme = "README.md"
-documentation = "https://docs.rs/preemptive-threads"
+build = "build.rs"
 
 [dependencies]
-portable-atomic = { version = "1.0", default-features = false }
-spin = { version = "0.9", default-features = false, features = ["mutex", "spin_mutex", "lazy", "once"] }
+linked_list_allocator = { version = "0.10", default-features = false, features = ["const_mut_refs"] }
 
 [features]
-default = ["full-fpu"]
-# Enable NEON/FPU context save/restore (recommended for most use cases)
-full-fpu = []
-# Enable std compatibility layer for host testing
-std-shim = []
-# Target QEMU virt machine instead of real Pi hardware
-# Use this for full preemption testing in QEMU (GIC works on virt, not on raspi3b)
+default = []
+# Target the QEMU `virt` machine (GICv2, PSCI, PL011 at 0x0900_0000).
+# Without this feature the crate targets BCM2837 boards: Raspberry Pi Zero 2 W,
+# Raspberry Pi 3 and QEMU `raspi3b`.
 qemu-virt = []
+# Allow `arch::semihosting::exit` to terminate QEMU with an exit code.
+# Only enable for emulator builds: on real hardware a semihosting call traps.
+semihosting = []
 
 [profile.dev]
 panic = "abort"
@@ -32,9 +31,13 @@ panic = "abort"
 [profile.release]
 panic = "abort"
 lto = true
-opt-level = "z"  # Optimize for size
+opt-level = 3
+debug = true
 
-# Bare-metal example kernel
 [[example]]
 name = "rpi_kernel"
 path = "examples/rpi_kernel.rs"
+
+[[example]]
+name = "test_kernel"
+path = "examples/test_kernel.rs"

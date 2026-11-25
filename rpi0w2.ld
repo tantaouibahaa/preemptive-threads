@@ -1,47 +1,31 @@
 /*
- * Linker script for Raspberry Pi Zero 2 W bare-metal kernel
+ * Linker script: Raspberry Pi Zero 2 W / QEMU raspi3b. The VideoCore firmware (and QEMU) load kernel8.img at 0x80000.
  *
- * Memory Layout:
- * - 0x00000000 - 0x0007FFFF: GPU reserved / VideoCore
- * - 0x00080000 - ...:        Kernel load address
- *
- * The GPU firmware loads kernel8.img at 0x80000 and jumps to it.
+ * Layout: .text.boot | .vectors | .text | .rodata | .data | .bss |
+ *         boot stacks (one 64 KiB stack per core) | heap
  */
-
 ENTRY(_start)
+
+BOOT_STACK_SIZE = 0x10000;
+MAX_CPUS = 4;
+HEAP_SIZE = 64M;
 
 SECTIONS
 {
-    /* Kernel loaded at 0x80000 by GPU firmware */
     . = 0x80000;
+    __kernel_start = .;
 
-    /* Boot code must be first - GPU jumps here */
-    .text.boot : {
-        KEEP(*(.text.boot))
-    }
+    .text.boot : { KEEP(*(.text.boot)) }
 
-    /* Exception vector table - must be 2048-byte aligned */
-    .vectors ALIGN(2048) : {
-        KEEP(*(.vectors))
-    }
+    .vectors ALIGN(2048) : { KEEP(*(.vectors)) }
 
-    /* Code section */
-    .text ALIGN(4096) : {
-        *(.text .text.*)
-    }
+    .text ALIGN(4096) : { *(.text .text.*) }
 
-    /* Read-only data */
-    .rodata ALIGN(4096) : {
-        *(.rodata .rodata.*)
-    }
+    .rodata ALIGN(4096) : { *(.rodata .rodata.*) }
 
-    /* Initialized data */
-    .data ALIGN(4096) : {
-        *(.data .data.*)
-    }
+    .data ALIGN(4096) : { *(.data .data.*) }
 
-    /* BSS - uninitialized data (cleared by boot code) */
-    .bss ALIGN(4096) : {
+    .bss ALIGN(4096) (NOLOAD) : {
         __bss_start = .;
         *(.bss .bss.*)
         *(COMMON)
@@ -49,22 +33,20 @@ SECTIONS
         __bss_end = .;
     }
 
-    /* Stack - grows downward from __stack_top */
-    . = ALIGN(16);
-    __stack_bottom = .;
-    . = . + 1M;  /* 1MB kernel stack */
-    __stack_top = .;
+    .stacks ALIGN(4096) (NOLOAD) : {
+        __boot_stacks_bottom = .;
+        . += BOOT_STACK_SIZE * MAX_CPUS;
+        __boot_stacks_top = .;
+    }
 
-    /* Heap for dynamic allocation */
-    . = ALIGN(16);
-    __heap_start = .;
-    . = . + 16M;  /* 16MB heap */
-    __heap_end = .;
+    .heap ALIGN(4096) (NOLOAD) : {
+        __heap_start = .;
+        . += HEAP_SIZE;
+        __heap_end = .;
+    }
 
-    /* End of kernel image */
     __kernel_end = .;
 
-    /* Discard unwanted sections */
     /DISCARD/ : {
         *(.comment)
         *(.gnu*)
@@ -73,7 +55,3 @@ SECTIONS
         *(.ARM.*)
     }
 }
-
-/* Provide symbols for kernel code */
-PROVIDE(__kernel_start = 0x80000);
-PROVIDE(__kernel_size = __kernel_end - __kernel_start);

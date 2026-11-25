@@ -1,84 +1,88 @@
-# Configuration
+# preemptive-threads: build, run and test targets.
+#
+#   make test            run the test kernel on every emulated machine
+#   make test-virt       QEMU virt, entered at EL1 (PSCI over HVC)
+#   make test-virt-el2   QEMU virt with virtualization=on (EL2 -> EL1 drop, PSCI over SMC)
+#   make test-raspi3b    QEMU raspi3b booting a flat image through the spin-table stub at EL2
+#   make kernel8.img     demo kernel image for a Raspberry Pi Zero 2 W SD card
+#   make run-raspi3b     run the demo on QEMU raspi3b (Ctrl-C to quit)
+#   make run-virt        run the demo on QEMU virt
+#   make clippy          lint both board configurations
+
+CARGO        ?= cargo
+JOBS         ?= 4
 TARGET       := aarch64-unknown-none
-PROFILE      := release
-TOOLCHAIN    := +nightly
+TIMEOUT      ?= 180
+OBJCOPY      ?= $(shell ls $$(rustc --print sysroot)/lib/rustlib/*/bin/rust-objcopy 2>/dev/null | head -1)
 
-# Examples
-EXAMPLE_FCFS := fcfs_kernel
-EXAMPLE_RPI  := rpi_kernel
+RPI_DIR      := target/rpi
+VIRT_DIR     := target/virt
+RPI_OUT      := $(RPI_DIR)/$(TARGET)/release/examples
+VIRT_OUT     := $(VIRT_DIR)/$(TARGET)/release/examples
+PASS_MARKER  := ALL [0-9]+ TESTS PASSED on 4 cores
 
-# Build paths
-BUILD_DIR    := target/$(TARGET)/$(PROFILE)/examples
-KERNEL_FCFS  := $(BUILD_DIR)/$(EXAMPLE_FCFS)
-KERNEL_RPI   := $(BUILD_DIR)/$(EXAMPLE_RPI)
-OUTPUT_BIN   := kernel8.img
-
-# QEMU settings
-QEMU         := qemu-system-aarch64
-QEMU_FLAGS   := -serial stdio -display none
-QEMU_PI_MACHINE     := raspi3b
-QEMU_VIRT_MACHINE   := virt,gic-version=2
-QEMU_VIRT_CPU       := cortex-a53
-QEMU_DEBUG_FLAGS    := -d int,cpu_reset
-QEMU_GDB_FLAGS      := -S -s
-
-# Linker script for QEMU virt
-VIRT_LINKER  := qemu_virt.ld
-
-.PHONY: all build build-rpi build-virt run run-rpi run-virt debug debug-virt gdb binary disasm clean help
+.PHONY: all build test test-virt test-virt-el2 test-raspi3b run-raspi3b run-virt clippy doc clean \
+        build/test-virt.elf build/test-raspi3b.img kernel8.img build/demo-virt.elf
 
 all: build
 
-help:
-	@echo "Available targets:"
-	@echo "  build       - Build FCFS kernel for Raspberry Pi"
-	@echo "  build-rpi   - Build RPI-specific kernel"
-	@echo "  build-virt  - Build kernel for QEMU virt machine"
-	@echo "  run         - Build and run FCFS kernel on QEMU (raspi3b)"
-	@echo "  run-rpi     - Build and run RPI kernel on QEMU"
-	@echo "  run-virt    - Build and run on QEMU virt machine"
-	@echo "  debug       - Run with interrupt/reset debugging"
-	@echo "  debug-virt  - Run virt machine with debugging"
-	@echo "  gdb         - Run and wait for GDB connection"
-	@echo "  binary      - Create flashable binary image"
-	@echo "  disasm      - Show disassembly of kernel"
-	@echo "  clean       - Remove build artifacts"
-
 build:
-	cargo $(TOOLCHAIN) build --$(PROFILE) --example $(EXAMPLE_FCFS) --target $(TARGET)
+	$(CARGO) build -j$(JOBS) --release --target-dir $(RPI_DIR) --examples
+	$(CARGO) build -j$(JOBS) --release --target-dir $(VIRT_DIR) --examples --features qemu-virt
 
-build-rpi:
-	cargo $(TOOLCHAIN) build --$(PROFILE) --example $(EXAMPLE_RPI) --target $(TARGET)
+# --- test kernels ---------------------------------------------------------
 
-build-virt:
-	RUSTFLAGS="-C link-arg=-T$(VIRT_LINKER)" \
-		cargo $(TOOLCHAIN) build --$(PROFILE) --example $(EXAMPLE_FCFS) --target $(TARGET) --features qemu-virt
+build/test-virt.elf:
+	@mkdir -p build
+	$(CARGO) build -j$(JOBS) --release --target-dir $(VIRT_DIR) --example test_kernel --features qemu-virt,semihosting
+	cp $(VIRT_OUT)/test_kernel $@
 
-run: build
-	$(QEMU) -M $(QEMU_PI_MACHINE) -kernel $(KERNEL_FCFS) $(QEMU_FLAGS)
+build/test-raspi3b.img:
+	@mkdir -p build
+	$(CARGO) build -j$(JOBS) --release --target-dir $(RPI_DIR) --example test_kernel --features semihosting
+	$(OBJCOPY) -O binary $(RPI_OUT)/test_kernel $@
 
-run-rpi: build-rpi
-	$(QEMU) -M $(QEMU_PI_MACHINE) -kernel $(KERNEL_RPI) $(QEMU_FLAGS)
+test-virt: build/test-virt.elf
+	scripts/qemu-run.sh virt $< $(TIMEOUT) build/test-virt.log
+	grep -Eq "$(PASS_MARKER)" build/test-virt.log
 
-run-virt: build-virt
-	$(QEMU) -M $(QEMU_VIRT_MACHINE) -cpu $(QEMU_VIRT_CPU) -kernel $(KERNEL_FCFS) $(QEMU_FLAGS)
+test-virt-el2: build/test-virt.elf
+	scripts/qemu-run.sh virt-el2 $< $(TIMEOUT) build/test-virt-el2.log
+	grep -Eq "$(PASS_MARKER)" build/test-virt-el2.log
 
-debug: build
-	$(QEMU) -M $(QEMU_PI_MACHINE) -kernel $(KERNEL_FCFS) $(QEMU_FLAGS) $(QEMU_DEBUG_FLAGS)
+test-raspi3b: build/test-raspi3b.img
+	scripts/qemu-run.sh raspi3b $< $(TIMEOUT) build/test-raspi3b.log
+	grep -Eq "$(PASS_MARKER)" build/test-raspi3b.log
 
-debug-virt: build-virt
-	$(QEMU) -M $(QEMU_VIRT_MACHINE) -cpu $(QEMU_VIRT_CPU) -kernel $(KERNEL_FCFS) $(QEMU_FLAGS) $(QEMU_DEBUG_FLAGS)
+test: test-virt test-virt-el2 test-raspi3b
 
-gdb: build
-	$(QEMU) -M $(QEMU_PI_MACHINE) -kernel $(KERNEL_FCFS) $(QEMU_FLAGS) $(QEMU_GDB_FLAGS)
+# --- demo kernel ----------------------------------------------------------
 
-binary: build
-	rust-objcopy -O binary $(KERNEL_FCFS) $(OUTPUT_BIN)
-	@echo "Created $(OUTPUT_BIN) - ready to flash"
+kernel8.img:
+	$(CARGO) build -j$(JOBS) --release --target-dir $(RPI_DIR) --example rpi_kernel
+	$(OBJCOPY) -O binary $(RPI_OUT)/rpi_kernel $@
+	@echo "kernel8.img ready: copy it to the SD card boot partition (see README)"
 
-disasm: build
-	rust-objdump -d $(KERNEL_FCFS) | head -200
+build/demo-virt.elf:
+	@mkdir -p build
+	$(CARGO) build -j$(JOBS) --release --target-dir $(VIRT_DIR) --example rpi_kernel --features qemu-virt
+	cp $(VIRT_OUT)/rpi_kernel $@
+
+run-raspi3b: kernel8.img
+	qemu-system-aarch64 -M raspi3b -display none -serial stdio -kernel kernel8.img
+
+run-virt: build/demo-virt.elf
+	qemu-system-aarch64 -M virt,gic-version=2 -cpu cortex-a53 -smp 4 -m 512M -display none -serial stdio -kernel $<
+
+# --- lint / docs ----------------------------------------------------------
+
+clippy:
+	$(CARGO) clippy -j$(JOBS) --release --target-dir $(RPI_DIR) --examples --features semihosting -- -D warnings
+	$(CARGO) clippy -j$(JOBS) --release --target-dir $(VIRT_DIR) --examples --features qemu-virt,semihosting -- -D warnings
+
+doc:
+	$(CARGO) doc -j$(JOBS) --no-deps --target-dir $(RPI_DIR)
 
 clean:
-	cargo clean
-	rm -f $(OUTPUT_BIN)
+	$(CARGO) clean
+	rm -f kernel8.img build/*.elf build/*.img build/*.log
