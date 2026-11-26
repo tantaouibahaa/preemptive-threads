@@ -2,7 +2,8 @@
 //!
 //! All thread switches (yield, block, exit and IRQ preemption) go through
 //! [`switch_context`]. It pushes a [`SwitchFrame`] (the AAPCS64 callee-saved
-//! registers x19-x30, d8-d15, FPCR/FPSR and DAIF) on the current stack,
+//! registers x19-x30, d8-d15, FPCR/FPSR, DAIF and the per-thread EL0
+//! registers SP_EL0 and TPIDR_EL0) on the current stack,
 //! stores the stack pointer into `*prev_sp`, loads `next_sp` and pops the
 //! next thread's frame.
 //!
@@ -16,7 +17,7 @@
 //!   [ thread's own frames ]
 //!   [ TrapFrame  (800 B) ]   <- pushed by the IRQ vector
 //!   [ IRQ handler frames ]
-//!   [ SwitchFrame (176 B) ]  <- saved_sp points here
+//!   [ SwitchFrame (192 B) ]  <- saved_sp points here
 //! ```
 //!
 //! and switching back to it simply unwinds both.
@@ -39,10 +40,14 @@ pub struct SwitchFrame {
     pub daif: u64,
     /// FPCR (low 32 bits) and FPSR (high 32 bits).
     pub fp_ctl: u64,
+    /// SP_EL0: the user stack pointer of a thread that runs a user process.
+    pub sp_el0: u64,
+    /// TPIDR_EL0: the user thread pointer (EL0 may write it at any time).
+    pub tpidr_el0: u64,
 }
 
 /// Size of [`SwitchFrame`] in bytes.
-pub const SWITCH_FRAME_SIZE: usize = 176;
+pub const SWITCH_FRAME_SIZE: usize = 192;
 const _: () = assert!(core::mem::size_of::<SwitchFrame>() == SWITCH_FRAME_SIZE);
 
 global_asm!(
@@ -68,6 +73,9 @@ __pt_switch:
     mrs     x11, fpsr
     str     x9, [sp, #160]
     stp     w10, w11, [sp, #168]
+    mrs     x9, sp_el0
+    mrs     x10, tpidr_el0
+    stp     x9, x10, [sp, #176]
     mov     x9, sp
     str     x9, [x0]
 
@@ -85,6 +93,9 @@ __pt_switch:
     ldp     w10, w11, [sp, #168]
     msr     fpcr, x10
     msr     fpsr, x11
+    ldp     x9, x10, [sp, #176]
+    msr     sp_el0, x9
+    msr     tpidr_el0, x10
     ldr     x9, [sp, #160]
     msr     daif, x9
     add     sp, sp, #{size}
@@ -144,6 +155,8 @@ pub unsafe fn init_stack(stack_top: usize, arg: usize) -> usize {
         d8_d15: [0; 8],
         daif: 0x3c0,
         fp_ctl: 0,
+        sp_el0: 0,
+        tpidr_el0: 0,
     };
     // SAFETY: the caller guarantees the memory is a writable, aligned stack.
     unsafe { core::ptr::write(sp as *mut SwitchFrame, frame) };

@@ -40,6 +40,7 @@ pub(crate) extern "C" fn boot_primary(boot_el: u64) -> ! {
     percpu::init_this_cpu(0);
     platform::early_init(boot_el as u8);
     crate::mem::heap::init();
+    crate::mem::frame::init();
     platform::irq_init_global();
     platform::irq_init_cpu(0);
     sched::init_idle_thread(&PERCPU[0]);

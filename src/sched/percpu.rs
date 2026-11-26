@@ -41,6 +41,8 @@ pub struct PerCpu {
     pub(crate) current_tid: AtomicU64,
     /// Absolute counter value of the next tick.
     pub(crate) next_tick: AtomicU64,
+    /// TTBR0_EL1 value of the running thread (0 = the kernel tables).
+    pub(crate) ttbr0: AtomicU64,
     pub(crate) ticks: AtomicU64,
     pub(crate) idle_ticks: AtomicU64,
     pub(crate) switches: AtomicU64,
@@ -67,6 +69,7 @@ impl PerCpu {
             current_prio: AtomicU8::new(0),
             current_tid: AtomicU64::new(0),
             next_tick: AtomicU64::new(0),
+            ttbr0: AtomicU64::new(0),
             ticks: AtomicU64::new(0),
             idle_ticks: AtomicU64::new(0),
             switches: AtomicU64::new(0),

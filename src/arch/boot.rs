@@ -133,6 +133,10 @@ __pt_el_to_el1:
 __pt_cpu_setup:
     mov     x9, #(3 << 20)
     msr     cpacr_el1, x9
+    // CNTKCTL_EL1: EL0 may read the counters (EL0PCTEN, EL0VCTEN) but not
+    // touch the timers, so user code cannot disturb the scheduler tick.
+    mov     x9, #3
+    msr     cntkctl_el1, x9
     ldr     x9, ={mair}
     msr     mair_el1, x9
     ldr     x9, ={tcr}
@@ -178,6 +182,8 @@ pub fn secondary_entry_addr() -> usize {
 }
 
 extern "C" {
+    static __kernel_start: u8;
+    static __kernel_end: u8;
     static __heap_start: u8;
     static __heap_end: u8;
     static __boot_stacks_top: u8;
@@ -186,6 +192,11 @@ extern "C" {
 /// `(start, end)` of the heap region reserved by the linker script.
 pub fn heap_region() -> (usize, usize) {
     (core::ptr::addr_of!(__heap_start) as usize, core::ptr::addr_of!(__heap_end) as usize)
+}
+
+/// `(start, end)` of the kernel image including boot stacks and heap.
+pub fn kernel_region() -> (usize, usize) {
+    (core::ptr::addr_of!(__kernel_start) as usize, core::ptr::addr_of!(__kernel_end) as usize)
 }
 
 /// `(bottom, top)` of the boot stack of `cpu`.

@@ -37,6 +37,15 @@ pub mod memory_map {
         t
     }
 
+    /// Start of the RAM the ARM cores may use.
+    pub const RAM_START: usize = 0;
+    /// End of the RAM the ARM cores may use. The Pi Zero 2 W has 512 MiB
+    /// shared with the GPU, whose carve-out sits at the top (its size depends
+    /// on `gpu_mem` in `config.txt`); 448 MiB leaves 64 MiB for the GPU,
+    /// the firmware default. QEMU `raspi3b` has 1 GiB, of which this uses
+    /// the same 448 MiB.
+    pub const RAM_END: usize = 0x1c00_0000;
+
     /// Level-1 entries (1 GiB each).
     pub const L1_ENTRIES: [u64; 512] = l1();
     /// Level-2 entries for the first GiB (2 MiB each).

@@ -155,6 +155,16 @@ impl Thread {
     pub fn cpus_ran(&self) -> u8 {
         sched::cpus_ran(&self.tcb)
     }
+
+    /// Make the thread leave user mode as soon as possible: its
+    /// [`crate::arch::user::run_user`] returns
+    /// [`crate::arch::user::UserExit::Interrupted`]. If the thread is
+    /// running user code on a core right now, that core is interrupted with
+    /// an IPI; otherwise the request is seen the next time it would enter or
+    /// return to user mode. Used to kill processes.
+    pub fn interrupt_user(&self) {
+        sched::interrupt_user(&self.tcb);
+    }
 }
 
 impl core::fmt::Debug for Thread {

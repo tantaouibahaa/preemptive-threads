@@ -1,5 +1,5 @@
 //! AArch64 CPU support: boot, MMU, exception vectors, context switching,
-//! the generic timer and semihosting.
+//! user mode (EL0), the generic timer and semihosting.
 //!
 //! Everything in here is specific to ARMv8-A running at EL1. Board-specific
 //! code (interrupt controller, UART, secondary-core release) lives in
@@ -10,6 +10,7 @@ pub mod context;
 pub mod mmu;
 pub mod semihosting;
 pub mod timer;
+pub mod user;
 pub mod vectors;
 
 use core::arch::asm;

@@ -31,6 +31,12 @@ pub mod memory_map {
         t
     }
 
+    /// Start of RAM.
+    pub const RAM_START: usize = 0x4000_0000;
+    /// End of the RAM the kernel uses: 512 MiB, what `scripts/qemu-run.sh`
+    /// and `make run-virt` pass with `-m 512M`. Run with at least that much.
+    pub const RAM_END: usize = 0x6000_0000;
+
     /// Level-1 entries (1 GiB each).
     pub const L1_ENTRIES: [u64; 512] = l1();
     /// Level-2 entries for the first GiB (2 MiB each).

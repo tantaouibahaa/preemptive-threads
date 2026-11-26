@@ -130,6 +130,10 @@ pub struct Tcb {
     pub(crate) cpus_ran: AtomicU8,
     pub(crate) is_idle: bool,
     start: UnsafeCell<Option<StartFn>>,
+    /// TTBR0_EL1 to load while this thread runs (0 = the kernel tables).
+    ttbr0: AtomicU64,
+    /// Set by [`interrupt_user`]: leave user mode at the next opportunity.
+    user_interrupt: AtomicBool,
 }
 
 // SAFETY: the UnsafeCell fields are only touched by the scheduler under the
@@ -242,6 +246,8 @@ pub(crate) fn create_thread(p: NewThread, f: StartFn) -> Result<Arc<Tcb>, crate:
         cpus_ran: AtomicU8::new(0),
         is_idle: false,
         start: UnsafeCell::new(Some(f)),
+        ttbr0: AtomicU64::new(0),
+        user_interrupt: AtomicBool::new(false),
     });
     // SAFETY: the stack is fresh and exclusively ours; the TCB is not yet
     // visible to any other core.
@@ -278,6 +284,8 @@ pub(crate) fn init_idle_thread(cpu: &PerCpu) {
         cpus_ran: AtomicU8::new(1 << cpu.id),
         is_idle: true,
         start: UnsafeCell::new(None),
+        ttbr0: AtomicU64::new(0),
+        user_interrupt: AtomicBool::new(false),
     });
     // SAFETY: called once per core during boot, IRQs masked.
     unsafe {
@@ -536,6 +544,7 @@ fn schedule_impl(preempting: bool) {
     if preempting && prev_state == RUNNING && !prev.is_idle {
         cpu.preemptions.fetch_add(1, Ordering::Relaxed);
     }
+    load_ttbr0(cpu, next.ttbr0.load(Ordering::Relaxed));
 
     // SAFETY: `next` is not on any core (checked by pick) so its saved SP
     // is stable; `prev`'s saved_sp slot stays alive because we hand a
@@ -579,6 +588,57 @@ fn reap(t: Arc<Tcb>) {
     }
     LIVE_THREADS.fetch_sub(1, Ordering::Relaxed);
     REAPED.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Make `ttbr0` (0 = the kernel tables) the active TTBR0_EL1 of `cpu`.
+/// Kernel mappings are global and identical in every table, so a thread
+/// keeps running normally across the switch.
+fn load_ttbr0(cpu: &PerCpu, ttbr0: u64) {
+    if cpu.ttbr0.load(Ordering::Relaxed) != ttbr0 {
+        let value = if ttbr0 == 0 { arch::mmu::kernel_ttbr0() } else { ttbr0 };
+        // SAFETY: `value` is either the boot tables or a user address space
+        // whose kernel half is a copy of them (callers of
+        // `set_address_space` guarantee that), so kernel code and data stay
+        // mapped.
+        unsafe { arch::mmu::set_ttbr0(value) };
+        cpu.ttbr0.store(ttbr0, Ordering::Relaxed);
+    }
+}
+
+/// Give the calling thread its own TTBR0_EL1 value (translation table
+/// base and ASID, as built by [`arch::mmu::AddressSpace::ttbr0`]) and load
+/// it now. The scheduler reloads it whenever the thread is switched in.
+/// Pass 0 to go back to the kernel tables.
+///
+/// # Safety
+///
+/// The tables must map the kernel exactly like the boot tables do and stay
+/// alive until the thread has switched back to 0 (or another value) with
+/// this function.
+pub unsafe fn set_address_space(ttbr0: u64) {
+    let irq = arch::irq_save();
+    let cpu = this_cpu();
+    // SAFETY: own core, IRQs masked.
+    let t = unsafe { (*cpu.current.get()).as_ref().expect("no current thread") };
+    t.ttbr0.store(ttbr0, Ordering::Relaxed);
+    load_ttbr0(cpu, ttbr0);
+    arch::irq_restore(irq);
+}
+
+/// Ask `t` to leave user mode: its [`arch::user::run_user`] returns
+/// [`arch::user::UserExit::Interrupted`] as soon as possible, even if the
+/// user code never makes a system call (a reschedule IPI interrupts it if it
+/// is running on a core right now).
+pub(crate) fn interrupt_user(t: &Arc<Tcb>) {
+    t.user_interrupt.store(true, Ordering::Release);
+    if t.state.load(Ordering::Acquire) == RUNNING {
+        kick(t.last_cpu.load(Ordering::Relaxed));
+    }
+}
+
+/// Consume the calling thread's leave-user-mode request.
+pub(crate) fn take_user_interrupt() -> bool {
+    with_current(|t| t.user_interrupt.swap(false, Ordering::AcqRel))
 }
 
 /// Mark the current thread blocked. The caller must already have published
