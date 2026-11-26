@@ -1,0 +1,35 @@
+[package]
+name = "pt-os"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+authors = ["Nathan Ryver <tantaouisoftware@gmail.com>"]
+description = "pt-os: a tiny multicore OS on preemptive-threads (user processes, system calls, ELF loading)"
+license = "MIT"
+repository = "https://github.com/tantaouibahaa/preemptive-threads"
+publish = false
+build = "build.rs"
+
+[dependencies]
+preemptive-threads = { path = ".." }
+
+[features]
+default = []
+# Same board selection as the core crate.
+qemu-virt = ["preemptive-threads/qemu-virt"]
+semihosting = ["preemptive-threads/semihosting"]
+
+[lib]
+name = "pt_os"
+path = "src/lib.rs"
+test = false
+doctest = false
+
+[[bin]]
+name = "pt-os"
+path = "src/main.rs"
+test = false
+
+[[example]]
+name = "os_test"
+path = "examples/os_test.rs"

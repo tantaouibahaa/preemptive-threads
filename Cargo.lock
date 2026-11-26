@@ -14,3 +14,14 @@ version = "1.0.0"
 dependencies = [
  "linked_list_allocator",
 ]
+
+[[package]]
+name = "pt-os"
+version = "0.1.0"
+dependencies = [
+ "preemptive-threads",
+]
+
+[[package]]
+name = "pt-user-tests"
+version = "0.1.0"

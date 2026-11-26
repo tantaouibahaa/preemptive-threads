@@ -21,7 +21,7 @@ jobs:
           targets: aarch64-unknown-none
           components: clippy, llvm-tools
       - uses: Swatinem/rust-cache@v2
-      - name: Build all examples (Raspberry Pi and QEMU virt)
+      - name: Build user programs, examples and pt-os (Raspberry Pi and QEMU virt)
         run: make build
       - name: Clippy (both boards, warnings are errors)
         run: make clippy
@@ -42,10 +42,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.88
         with:
           targets: aarch64-unknown-none
-      - name: Build library and examples
+      - name: Build library, examples, user programs and pt-os
         run: |
           cargo build --release --examples
           cargo build --release --examples --features qemu-virt,semihosting
+          make user
+          cargo build --release -p pt-os --bins --examples
+          cargo build --release -p pt-os --bins --examples --features qemu-virt,semihosting
 
   qemu:
     name: QEMU ${{ matrix.machine }}
@@ -66,13 +69,19 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y qemu-system-arm
           qemu-system-aarch64 --version
-      - name: Run test kernel
+      - name: Run thread test kernel
         run: make test-${{ matrix.machine }}
-      - name: Test log
+      - name: Run OS test kernel (user processes)
+        run: make test-os-${{ matrix.machine }}
+      - name: Test logs
         if: always()
-        run: cat build/test-${{ matrix.machine }}.log || true
+        run: |
+          cat build/test-${{ matrix.machine }}.log || true
+          cat build/os-test-${{ matrix.machine }}.log || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: test-log-${{ matrix.machine }}
-          path: build/test-${{ matrix.machine }}.log
+          path: |
+            build/test-${{ matrix.machine }}.log
+            build/os-test-${{ matrix.machine }}.log

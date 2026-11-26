@@ -24,6 +24,19 @@ pub fn _print(args: fmt::Arguments<'_>) {
     let _ = Raw.write_fmt(args);
 }
 
+/// Write raw bytes (e.g. from a user process) as one unit, translating
+/// `\n` to `\r\n`. Bytes are sent as they are; nothing is assumed about
+/// their encoding.
+pub fn write_bytes(bytes: &[u8]) {
+    let _g = LOCK.lock();
+    for &b in bytes {
+        if b == b'\n' {
+            UART.putc(b'\r');
+        }
+        UART.putc(b);
+    }
+}
+
 /// Unlocked writer for panic and fatal-exception paths (the console lock may
 /// be held by the code that crashed).
 pub struct PanicWriter;

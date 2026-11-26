@@ -54,7 +54,7 @@ pub fn run_user(frame: &mut TrapFrame) -> UserExit {
     // trap frame on this thread's stack (it lives in our caller's frame,
     // above the context block __pt_run_user pushes); the user state it
     // holds is confined to EL0 by the sanitised SPSR.
-    let why = unsafe { __pt_run_user(frame) };
+    let why = unsafe { __pt_run_user((frame as *mut TrapFrame).cast()) };
     let exit = if why == LEAVE_SYNC {
         let (esr, far): (u64, u64);
         // SAFETY: reading syndrome registers has no side effects. IRQs are

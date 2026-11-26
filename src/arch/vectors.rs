@@ -415,7 +415,8 @@ extern "C" {
     /// The vector table (2 KiB aligned, installed in VBAR_EL1 at boot).
     pub static __pt_vectors: u8;
     /// Enter EL0 with the state in `frame`; see [`crate::arch::user::run_user`].
-    pub(crate) fn __pt_run_user(frame: *mut TrapFrame) -> u64;
+    /// `frame` is a `*mut TrapFrame` (opaque to the assembly).
+    pub(crate) fn __pt_run_user(frame: *mut core::ffi::c_void) -> u64;
 }
 
 const KINDS: [&str; 16] = [
