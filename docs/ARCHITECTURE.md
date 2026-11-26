@@ -2,7 +2,9 @@
 
 This document describes how preemptive-threads gets from reset to four cores
 switching threads: the boot path, the memory map, the context layout, the
-interrupt flow and the SMP scheduler.
+interrupt flow and the SMP scheduler. Section 6 covers user processes
+(`os/`, the `pt-os` kernel): address spaces, EL0 entry and exit, system
+calls and the process lifecycle.
 
 ## 1. Boot
 
@@ -60,6 +62,7 @@ patches one descriptor.
 * 4 KiB granule, 39-bit VA (T0SZ = 25), walk starts at level 1.
 * MAIR: index 0 = Device-nGnRnE, index 1 = Normal WB RW-allocate.
 * RAM is Normal, Inner Shareable; MMIO is Device, PXN/UXN.
+* Every kernel mapping is EL1-only (AP[2:1] = 00), UXN and global (nG = 0).
 
 | region | Pi (BCM2837) | QEMU virt |
 |--------|--------------|-----------|
@@ -85,13 +88,14 @@ register state lives on the thread's own stack.
  ├──────────────────────────────┤
  │ TrapFrame (800 B)            │  only if the thread was interrupted:
  │   x0-x30, ELR_EL1, SPSR_EL1, │  pushed by the IRQ vector
- │   FPCR, FPSR, q0-q31         │
+ │   FPCR, FPSR, SP_EL0, q0-q31 │  (SP_EL0 only for traps from EL0)
  ├──────────────────────────────┤
  │ irq_exit / schedule frames   │
  ├──────────────────────────────┤
- │ SwitchFrame (176 B)          │  pushed by __pt_switch
+ │ SwitchFrame (192 B)          │  pushed by __pt_switch
  │   x19-x28, x29, x30,         │
- │   d8-d15, DAIF, FPCR|FPSR    │
+ │   d8-d15, DAIF, FPCR|FPSR,   │
+ │   SP_EL0, TPIDR_EL0          │
  └──────────────────────────────┘ ◄─ Tcb.saved_sp
  ...
  │ canary (checked on every switch-out)
@@ -223,3 +227,167 @@ low/medium/high inversion on one core and would hang without this.
 * **TCBs** are `Arc`s. Owners are the run queue, the current slot of a core,
   a wait queue or the sleep queue, and `Thread` handles. A dead thread is
   reclaimed by the next thread to run on its core.
+
+## 6. User processes (pt-os)
+
+The core crate provides the mechanisms (EL0 entry, lower-EL vectors,
+address spaces, ASIDs, frames); the `os/` crate (`pt-os`) adds the policy:
+the process table, the ELF loader, user-pointer checks and the system calls.
+A process is **one kernel thread plus an address space**. Everything else
+(scheduling, preemption, migration between cores) is the thread machinery
+above, unchanged.
+
+### Address spaces
+
+```text
+ TTBR0_EL1 = process L1 table | ASID << 48         (the kernel's own: BOOT_L1, ASID 0)
+
+ process L1 (private, 4 KiB)
+ ┌───────┬─────────────────────────────────────────────────────────────────┐
+ │ [0]   │ ─► BOOT_L2 (shared by pointer)  first GiB in 2 MiB blocks      │  copied from BOOT_L1:
+ │ [1]   │ RAM / ARM-local block           (as in BOOT_L1)                │  EL1-only, UXN, global
+ │ [2]   │ RAM block (virt)                (as in BOOT_L1)                │
+ │ ...   │ invalid                                                         │
+ │ [256] │ ─► private L2 ─► L3 tables      user window, 4 KiB pages       │  EL0, nG, PXN
+ │ ...   │ invalid                                                         │
+ └───────┴─────────────────────────────────────────────────────────────────┘
+
+ user window (VA 0x40_0000_0000 .. 0x41_0000_0000, 1 GiB)
+ 0x40_0000_0000  ┌──────────────────────────┐
+                 │ unmapped (1 MiB)         │  catches small bad pointers
+ 0x40_0010_0000  ├──────────────────────────┤
+                 │ text        R-X          │  PT_LOAD segments, W^X enforced
+                 │ rodata      R--          │
+                 │ data, bss   RW-          │
+ brk_start       ├──────────────────────────┤
+                 │ heap        RW-   ▲ sbrk │
+                 │            ...           │
+ HEAP_LIMIT      ├──────────────────────────┤
+                 │ guard page (unmapped)    │
+ STACK_BOTTOM    ├──────────────────────────┤
+                 │ stack 64 KiB RW-  ▼      │  argv strings, argc/argv/envp/auxv
+ 0x41_0000_0000  └──────────────────────────┘  (= STACK_TOP = USER_END)
+```
+
+* The kernel stays identity-mapped in the low VA range, in every address
+  space, through the shared tables. AP bits make it inaccessible from EL0
+  and UXN makes it non-executable there (ARMv8 would otherwise allow EL0 to
+  execute EL1-only memory).
+* User pages are not global, so their TLB entries carry the process's
+  8-bit ASID. A switch between processes is one `msr ttbr0_el1` in
+  `schedule()` (only when the next thread's value differs from the core's
+  current one); no TLB flush.
+* Unmapping a page (`sbrk` shrink) does `tlbi vae1is`; dropping an address
+  space does `tlbi aside1is` before any frame is freed, and again when the
+  ASID is released, so no core keeps a stale translation. Both are
+  broadcast to all four cores.
+* **ASID exhaustion** is handled the simple way: 255 ASIDs (1-255), one per
+  live process. When all are in use `spawn` fails with `EAGAIN`; the
+  process table is capped at the same number. No generation rollover.
+* **Frames** come from `mem::frame`: all RAM from the end of the kernel
+  image (boot stacks and heap included) to `memory_map::RAM_END`
+  (virt: 512 MiB, the `-m` the scripts pass; Pi: 448 MiB, below the GPU
+  carve-out of a Pi Zero 2 W). A free list threaded through the free frames,
+  plus a bump pointer for frames never handed out. Frames are zeroed on
+  allocation. The page tables and every user page come from here.
+* Code pages are cleaned to the point of unification and the I-caches of
+  all cores invalidated (`ic ialluis`) before the program runs.
+* **No PAN on the Cortex-A53.** The kernel never dereferences a user
+  pointer. `copy_from_user` / `copy_to_user` check the whole range against
+  the process's VMAs (and write permission), then translate page by page
+  through the process's own tables and copy through the kernel's identity
+  map. A bad pointer gives `EFAULT`, never a kernel fault.
+
+### EL0 ↔ EL1
+
+```text
+ process thread (EL1, its own kernel stack)
+   loop {
+     run_user(&mut frame) ──────────────────────────────┐
+       mask IRQs, sanitise SPSR (EL0t, DAIF clear)      │
+       __pt_run_user: push KCTX {&frame, FPCR,          │
+                      x19-x30, d8-d15} ─► SP_EL1        │
+       restore user regs from frame, eret ───────────►  EL0: user code runs
+                                                        │
+       ┌──── sync exception (svc, abort, udf, ...) ◄────┤
+       │     vector 0x400: save x0-x30, ELR, SPSR,      │
+       │     SP_EL0, FPCR, FPSR, q0-q31 into *frame     │
+       │     (address found in KCTX at SP_EL1),         │
+       │     pop KCTX, return from __pt_run_user        │
+       │                                                │
+       │     IRQ ◄──────────────────────────────────────┤
+       │     vector 0x480: save user state into *frame  │
+       │     IRQ stack: dispatch (timer, IPI)           │
+       │     irq_exit ─► schedule()   (preemption,      │
+       │                  may resume on another core)   │
+       │     asked to leave (kill)? ── no ─► eret to EL0 ┘
+       │                         └─ yes ─► return Interrupted
+       ▼
+     read ESR/FAR, unmask IRQs, return UserExit
+     classify: syscall ─► dispatch, x0 = result
+               wfi/wfe  ─► yield
+               fault    ─► "[pid N] <reason> at <addr>", status -signal
+   }
+```
+
+* User code always runs with IRQs unmasked, so a loop that never makes a
+  system call is still preempted by the timer like any thread. EL0 cannot
+  mask interrupts (SCTLR_EL1.UMA = 0), touch the timer (CNTKCTL_EL1 allows
+  only counter reads), or use WFI/WFE or cache maintenance.
+* SP_EL0 and TPIDR_EL0 are per thread: SP_EL0 is in the trap frame,
+  and both are saved and restored in the switch frame, so a process
+  switched out in the kernel gets its own values back.
+* System calls and faults are handled by ordinary Rust code on the
+  process's kernel thread with IRQs enabled, so they can block (sleep,
+  wait) and be preempted.
+* A fault taken at EL1 is still fatal (register dump and halt); only EL0
+  faults kill a process.
+
+### System calls
+
+`svc #0`, number in x8, arguments in x0-x5, result in x0, negative errno on
+failure. Implemented: `exit` (0), `write` (1, fd 1/2 to the console),
+`spawn` (6, program name and NULL-terminated argv), `wait` (7, pid or -1,
+status pointer), `kill` (8, own child or self), `getpid` (9), `sleep` (10,
+ns), `yield` (11), `sbrk` (12), `uptime` (15, ns), `cpu` (17). Numbers 2-5,
+13, 14 and 16 are reserved for `read`, `open`, `close`, `readdir`, `pipe`,
+`dup2` and `procinfo` (M3/M4) and return `ENOSYS`. See
+`os/src/syscall.rs`.
+
+### Process lifecycle
+
+```text
+ spawn(name or ELF, argv)
+   ASID + L1/L2 tables ─► load PT_LOAD segments (W^X) ─► map stack, copy argv
+   ─► table entry (pid, parent, Running) ─► kernel thread (32 KiB stack)
+        │
+        ▼
+ Running: thread sets TTBR0, loops in run_user / dispatch
+        │ exit(code) │ fault: status -signal │ kill: status -9
+        ▼
+ exit: TTBR0 back to the kernel tables ─► drop the Mm: tlbi aside1is,
+       every user frame + page tables back to the frame allocator, ASID freed
+       ─► children reparented to the kernel (auto-reaped) ─► Zombie(status)
+       ─► wake waiters ─► thread exits
+        │
+        ▼
+ wait(pid) by the parent: removes the zombie, returns (pid, status)
+```
+
+`kill` sets a flag and calls `Thread::interrupt_user`. If the process is
+running user code on some core, that core gets a reschedule IPI and the
+EL0 IRQ path returns from `run_user` instead of resuming it (measured at
+under 100 µs in QEMU). A process blocked in `sleep` notices within 10 ms; one
+blocked in `wait` is woken right away.
+
+### Tests
+
+`os/examples/os_test.rs` (`make test-os`) runs embedded EL0 programs from
+`user/tests/` (`hello`, `poke`, `spin`, `busy`, `sbrk`, `syscalls`,
+`parent`, `secret`, `regs`): exit codes through `wait`, writes to kernel
+memory, executing kernel code and undefined instructions killing only the
+process, isolation (another process's heap address faults; the same VA maps
+to different frames and ASIDs), `sbrk` growth and shrink, a syscall-free
+busy loop being preempted and killed, TPIDR_EL0 and FP state across
+preemption, 32 processes over all 4 cores, rejected ELF images, ASID
+exhaustion, and the frame and ASID counts returning to their baseline.

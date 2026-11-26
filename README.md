@@ -42,6 +42,26 @@ fn main() {
 | QEMU `raspi3b`, flat `kernel8.img` released through the spin-table stub at EL2, like the Pi firmware | all 16 tests pass, 4 cores, in CI |
 | Real Raspberry Pi Zero 2 W | **not yet verified on hardware.** The image builds and the boot path mirrors the firmware's (EL2 entry, spin table, ARM-local interrupt controller, PL011 on GPIO14/15). See [Running on a real Pi](#running-on-a-real-pi-zero-2-w) |
 
+## In progress: user processes
+
+The repository is growing into a tiny multicore OS (`pt-os`). Already working
+on all three QEMU machines, with tests in CI (`make test-os`):
+
+- user programs run at EL0 in their own address spaces (per-process page
+  tables, 8-bit ASIDs, kernel mapped EL1-only and never executable from
+  EL0);
+- system calls (`svc #0`): `exit`, `write`, `spawn`, `wait`, `kill`,
+  `getpid`, `sleep`, `yield`, `sbrk`, `uptime`, `cpu`;
+- a static ELF64 loader with W^X, user stacks with argc/argv, a process
+  table with `wait`/`kill`. A faulting process is killed with
+  `[pid N] <reason> at <addr>` and the kernel keeps running.
+
+A file system, console input, a user library and a shell come next. The
+workspace has three crates: this one (the core: scheduler, sync, arch and
+EL0 support), `os/` (the `pt-os` kernel: processes, system calls, ELF) and
+`user/tests/` (the EL0 test programs). See
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#6-user-processes-pt-os).
+
 ## Features
 
 - **Preemption on all four cores.** Each core's generic timer ticks at
@@ -85,8 +105,10 @@ rustup target add aarch64-unknown-none
 rustup component add llvm-tools
 brew install qemu            # or: sudo apt install qemu-system-arm
 
-make test                    # test kernel on virt, virt-el2 and raspi3b
-make test-virt               # just one machine
+make test                    # thread and OS test kernels on virt, virt-el2 and raspi3b
+make test-virt               # thread tests, just one machine
+make test-os-virt            # user-process tests, just one machine
+make run-os-virt             # pt-os on QEMU virt (Ctrl-A X to quit)
 make run-raspi3b             # demo kernel on QEMU raspi3b (Ctrl-C to quit)
 make kernel8.img             # demo image for a real Pi
 ```
@@ -211,8 +233,8 @@ with one of those scripts.
 
 ## Limitations
 
-- Everything runs at EL1 in one identity-mapped address space. There is no
-  user mode or memory protection between threads.
+- Kernel threads run at EL1 in one identity-mapped address space, with no
+  memory protection between them. User processes (`os/`) are isolated.
 - A panic in any thread stops the whole system (`panic = "abort"`).
 - Priority inheritance is one level deep: it is not propagated along chains
   of mutexes. Boosts are exact when nested mutexes unlock in reverse order.
