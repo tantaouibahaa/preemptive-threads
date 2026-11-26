@@ -120,6 +120,9 @@ fn main() {
             i, c.ticks, c.idle_ticks, c.context_switches, c.preemptions, c.steals, c.ipis
         );
     }
+    // Disarm the progress watchdog: without semihosting (real hardware) the
+    // exit below only halts this core and the watchdog would keep running.
+    TEST_STARTED.store(0, Ordering::Release);
     if failed == 0 {
         println!("ALL {} TESTS PASSED on {} cores", tests.len(), s.cpus_online());
         pt::arch::semihosting::exit(0);
