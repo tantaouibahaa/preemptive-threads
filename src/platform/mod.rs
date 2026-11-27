@@ -14,6 +14,8 @@ pub mod pl011;
 #[cfg(not(feature = "qemu-virt"))]
 pub mod bcm2836;
 #[cfg(not(feature = "qemu-virt"))]
+pub mod mailbox;
+#[cfg(not(feature = "qemu-virt"))]
 mod rpi;
 #[cfg(not(feature = "qemu-virt"))]
 pub use rpi::*;

@@ -71,10 +71,16 @@ patches one descriptor.
 
 | region | Pi (BCM2837) | QEMU virt |
 |--------|--------------|-----------|
-| 0x0000_0000-0x3EFF_FFFF | RAM (2 MiB blocks) | MMIO (2 MiB blocks) |
+| 0x0000_0000-0x1BFF_FFFF | RAM (2 MiB blocks) | MMIO (2 MiB blocks) |
+| 0x1C00_0000-0x3EFF_FFFF | unmapped (GPU memory) | MMIO |
 | 0x3F00_0000-0x3FFF_FFFF | peripherals (Device) | MMIO |
 | 0x4000_0000-0x7FFF_FFFF | ARM-local block (Device) | RAM |
 | 0x8000_0000-0xBFFF_FFFF | unmapped | RAM |
+
+On the Pi the boot core asks the firmware for the ARM's memory (property
+mailbox, tag `GET_ARM_MEMORY`) and uses the smaller of its answer and
+0x1C00_0000; blocks past the answer are unmapped too. If the firmware does
+not answer within 100 ms, the kernel warns and uses 0x1C00_0000.
 
 Secondary cores read the spin-table slot and their stack with the MMU off.
 The boot core cleans the slot's cache line to the point of coherency before

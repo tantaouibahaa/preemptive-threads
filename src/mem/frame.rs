@@ -3,7 +3,8 @@
 //! Hands out 4 KiB frames of board RAM that nothing else uses: everything
 //! from the end of the kernel image (which includes the boot stacks and the
 //! heap, see the linker scripts) to the end of the RAM the board gives the
-//! ARM cores ([`crate::platform::memory_map::RAM_END`]).
+//! ARM cores ([`crate::platform::ram_end`]: on the Pi the firmware's
+//! answer, capped at [`crate::platform::memory_map::RAM_END`]).
 //!
 //! Frames are accessed by the kernel through its identity map, so a
 //! physical address is also a valid kernel pointer. Free frames form an
@@ -11,7 +12,7 @@
 //! itself); frames never handed out yet are taken from a bump pointer, so
 //! boot does not have to touch the whole pool. Allocated frames are zeroed.
 
-use crate::platform::memory_map::{RAM_END, RAM_START};
+use crate::platform::memory_map::RAM_START;
 use crate::sync::IrqSpinLock;
 
 /// Size of a frame.
@@ -42,7 +43,7 @@ pub(crate) fn init() {
     // RAM_START is 0 on the Pi, so `max` is a no-op there.
     #[allow(clippy::unnecessary_min_or_max)]
     let start = kernel_end.max(RAM_START).next_multiple_of(FRAME_SIZE);
-    let end = RAM_END & !(FRAME_SIZE - 1);
+    let end = crate::platform::ram_end() & !(FRAME_SIZE - 1);
     let mut p = POOL.lock();
     p.start = start;
     p.end = end.max(start);

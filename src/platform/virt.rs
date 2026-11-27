@@ -43,6 +43,16 @@ pub mod memory_map {
     pub const L2_ENTRIES: [u64; 512] = l2();
 }
 
+/// End of the RAM the kernel uses (the frame allocator's limit).
+pub fn ram_end() -> usize {
+    memory_map::RAM_END
+}
+
+/// Print the RAM range in use (boot breadcrumbs).
+pub fn print_boot_info() {
+    crate::println!("[boot] ram {:#x}-{:#x} (fixed)", memory_map::RAM_START, memory_map::RAM_END);
+}
+
 /// Bring up the console and pick the PSCI conduit.
 pub fn early_init(boot_el: u8) {
     psci::set_conduit_from_boot_el(boot_el);

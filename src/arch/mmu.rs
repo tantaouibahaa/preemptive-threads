@@ -98,6 +98,41 @@ pub const SCTLR_MMU_ON: u64 = 0x30D0_0800 | (1 << 12) | (1 << 2) | 1;
 /// SCTLR_EL1 value used before the MMU is enabled.
 pub const SCTLR_MMU_OFF: u64 = 0x30D0_0800;
 
+/// Make the 2 MiB blocks of the boot identity map that cover
+/// `start..end` (2 MiB aligned, within the first GiB) invalid, on every
+/// core. For RAM the board turns out not to have.
+///
+/// # Safety
+///
+/// Nothing may use the range, and no user address space may exist yet
+/// (they share [`BOOT_L2`]).
+pub unsafe fn unmap_boot_blocks(start: usize, end: usize) {
+    debug_assert!(start.is_multiple_of(1 << 21) && end.is_multiple_of(1 << 21) && end <= 1 << 30);
+    let l2 = core::ptr::addr_of_mut!(BOOT_L2) as *mut u64;
+    // SAFETY: indices < 512; forwarded to the caller. A valid -> invalid
+    // change needs no break-before-make, only the TLB flush.
+    unsafe {
+        for i in start >> 21..end >> 21 {
+            l2.add(i).write_volatile(0);
+        }
+        asm!("dsb ishst", "tlbi vmalle1is", "dsb ish", "isb", options(nostack, preserves_flags));
+    }
+}
+
+/// Whether `va` is mapped for EL1 reads in the current translation
+/// regime (an `AT S1E1R` probe; nothing is accessed).
+pub fn is_mapped(va: usize) -> bool {
+    let par: u64;
+    // SAFETY: address translation probes have no side effects beyond
+    // PAR_EL1; IRQs are masked so nothing else can clobber it in between.
+    unsafe {
+        let irq = super::irq_save();
+        asm!("at s1e1r, {}", "isb", "mrs {}, par_el1", in(reg) va, out(reg) par, options(nostack, preserves_flags));
+        super::irq_restore(irq);
+    }
+    par & 1 == 0
+}
+
 /// TTBR0_EL1 value of the kernel's own tables (ASID 0).
 pub fn kernel_ttbr0() -> u64 {
     core::ptr::addr_of!(BOOT_L1) as u64

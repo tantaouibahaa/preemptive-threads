@@ -87,6 +87,7 @@ fn main() {
         ("condvar_producer_consumer", condvar_producer_consumer),
         ("fpu_state_preserved", fpu_state_preserved),
         ("console_write_keeps_irqs_on", console_write_keeps_irqs_on),
+        ("memory_map", memory_map),
         ("threads_reaped", threads_reaped),
     ];
     let names: Vec<&'static str> = tests.iter().map(|t| t.0).collect();
@@ -566,6 +567,31 @@ fn console_write_keeps_irqs_on() -> TestResult {
     // Half the ideal tick count, with slack for the first and last tick.
     ensure!(ticks * 2 + 4 >= ms, "{} B took {} ms but cpu2 took only {} ticks: IRQs were masked", len, ms, ticks);
     Ok(format!("{} B in {} ms, cpu2 ticks +{}", len, ms, ticks))
+}
+
+/// The identity map covers the kernel and all of the RAM the frame
+/// allocator hands out; on the Pi, the RAM range comes from the firmware
+/// and the GPU's memory above it is not mapped at all.
+fn memory_map() -> TestResult {
+    use pt::arch::mmu::is_mapped;
+    let end = pt::platform::ram_end();
+    let (kstart, kend) = pt::arch::boot::kernel_region();
+    ensure!(is_mapped(kstart) && is_mapped(kend - 1), "kernel image {:#x}-{:#x} not mapped", kstart, kend);
+    ensure!(is_mapped(end - 1), "last byte of RAM {:#x} not mapped", end - 1);
+    #[cfg(not(feature = "qemu-virt"))]
+    {
+        let gpu = end.next_multiple_of(2 << 20);
+        ensure!(!is_mapped(gpu) && !is_mapped(0x3eff_ffff), "GPU memory {:#x}-0x3f000000 is mapped", gpu);
+        ensure!(is_mapped(0x3f20_0000), "GPIO block not mapped");
+        let Some(fw) = pt::platform::firmware_info() else {
+            return Err(String::from("the firmware memory query failed"));
+        };
+        let fw_end = fw.arm_base as usize + fw.arm_size as usize;
+        ensure!(fw.arm_base == 0 && fw_end >= end, "using RAM up to {:#x}, firmware says {:#x}+{:#x}", end, fw.arm_base, fw.arm_size);
+        Ok(format!("ram ends at {:#x} (firmware: {:#x}), {:#x}-0x3f000000 unmapped, board rev {:#x}", end, fw_end, gpu, fw.board_revision))
+    }
+    #[cfg(feature = "qemu-virt")]
+    Ok(format!("ram ends at {:#x}", end))
 }
 
 fn threads_reaped() -> TestResult {

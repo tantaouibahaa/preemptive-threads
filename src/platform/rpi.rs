@@ -1,8 +1,10 @@
 //! Raspberry Pi Zero 2 W / Raspberry Pi 3 (BCM2837) and QEMU `raspi3b`.
 
+use super::mailbox::{self, FirmwareInfo, MailboxError};
 use super::{bcm2836, pl011::Pl011, Irq};
 use crate::arch;
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use crate::sync::IrqSpinLock;
+use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 /// Human-readable board name.
 pub const NAME: &str = "Raspberry Pi (BCM2837)";
@@ -28,8 +30,16 @@ pub mod memory_map {
         let mut i = 0;
         while i < 512 {
             let addr = (i as u64) << 21;
-            // 0x3F00_0000..0x4000_0000 is the peripheral window.
-            t[i] = if addr >= 0x3f00_0000 { device_block(addr) } else { normal_block(addr) };
+            // 0x3F00_0000..0x4000_0000 is the peripheral window. Between
+            // the ARM's RAM and it is the GPU's memory (or nothing): left
+            // unmapped, so a stray access faults instead of corrupting it.
+            t[i] = if addr >= 0x3f00_0000 {
+                device_block(addr)
+            } else if addr < RAM_END as u64 {
+                normal_block(addr)
+            } else {
+                0
+            };
             i += 1;
         }
         t
@@ -44,17 +54,76 @@ pub mod memory_map {
 
     /// Start of the RAM the ARM cores may use.
     pub const RAM_START: usize = 0;
-    /// End of the RAM the ARM cores may use. The Pi Zero 2 W has 512 MiB
-    /// shared with the GPU, whose carve-out sits at the top (its size depends
-    /// on `gpu_mem` in `config.txt`); 448 MiB leaves 64 MiB for the GPU,
-    /// the firmware default. QEMU `raspi3b` has 1 GiB, of which this uses
-    /// the same 448 MiB.
+    /// Most RAM the ARM cores use. The Pi Zero 2 W has 512 MiB shared with
+    /// the GPU, whose carve-out sits at the top (its size depends on
+    /// `gpu_mem` in `config.txt`); 448 MiB leaves 64 MiB for the GPU, the
+    /// firmware default. QEMU `raspi3b` has 1 GiB, of which this uses the
+    /// same 448 MiB. At boot the firmware is asked for the real range, and
+    /// the kernel uses whichever ends first (see [`super::ram_end`]).
     pub const RAM_END: usize = 0x1c00_0000;
 
     /// Level-1 entries (1 GiB each).
     pub const L1_ENTRIES: [u64; 512] = l1();
     /// Level-2 entries for the first GiB (2 MiB each).
     pub const L2_ENTRIES: [u64; 512] = l2();
+}
+
+/// What the firmware said at boot (`None` before [`early_init`]).
+static FIRMWARE: IrqSpinLock<Option<Result<FirmwareInfo, MailboxError>>> = IrqSpinLock::new(None);
+/// End of the RAM the kernel uses: the firmware's answer, capped at
+/// [`memory_map::RAM_END`].
+static RAM_END_USED: AtomicUsize = AtomicUsize::new(memory_map::RAM_END);
+
+/// End of the RAM the kernel uses (the frame allocator's limit).
+pub fn ram_end() -> usize {
+    RAM_END_USED.load(Ordering::Relaxed)
+}
+
+/// Ask the firmware how much RAM the ARM has; use less than the hardcoded
+/// limit if it says so, and unmap the 2 MiB blocks beyond.
+fn probe_memory() {
+    let info = mailbox::query();
+    if let Ok(fw) = info {
+        let kernel_end = arch::boot::kernel_region().1;
+        let end = fw.arm_base as usize + fw.arm_size as usize;
+        if fw.arm_base == 0 && end >= kernel_end && end < memory_map::RAM_END {
+            RAM_END_USED.store(end, Ordering::Relaxed);
+            // SAFETY: nothing lives above the kernel image yet, and no user
+            // address space exists.
+            unsafe { arch::mmu::unmap_boot_blocks(end.next_multiple_of(1 << 21), memory_map::RAM_END) };
+        }
+    }
+    *FIRMWARE.lock() = Some(info);
+}
+
+/// What the firmware reported at boot, if the query worked.
+pub fn firmware_info() -> Option<FirmwareInfo> {
+    FIRMWARE.lock().and_then(|r| r.ok())
+}
+
+/// Print what the firmware reported and the RAM range in use (boot
+/// breadcrumbs).
+pub fn print_boot_info() {
+    let end = ram_end();
+    match *FIRMWARE.lock() {
+        Some(Ok(fw)) => crate::println!(
+            "[boot] ram {:#x}-{:#x} ({} MiB; firmware: {:#x}+{:#x}), board rev {:#x}, firmware {:#x}",
+            memory_map::RAM_START,
+            end,
+            (end - memory_map::RAM_START) >> 20,
+            fw.arm_base,
+            fw.arm_size,
+            fw.board_revision,
+            fw.firmware_revision
+        ),
+        Some(Err(e)) => crate::println!(
+            "[boot] WARNING: firmware memory query failed ({:?}); assuming ram {:#x}-{:#x}",
+            e,
+            memory_map::RAM_START,
+            end
+        ),
+        None => {}
+    }
 }
 
 /// Full system barrier: the BCM2837's peripherals sit on different AXI
@@ -123,6 +192,7 @@ pub fn early_init(_boot_el: u8) {
         UART.init((26, 3));
         dsb();
     }
+    probe_memory();
 }
 
 /// Global interrupt controller setup: disable every peripheral and
