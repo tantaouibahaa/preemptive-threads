@@ -26,6 +26,10 @@ qemu-virt = []
 # Allow `arch::semihosting::exit` to terminate QEMU with an exit code.
 # Only enable for emulator builds: on real hardware a semihosting call traps.
 semihosting = []
+# Emulator only: make the PL011 transmit as slowly as a real one at 115200
+# baud (about 87 us per byte, 16-byte FIFO), to find code that only works
+# because QEMU's UART is instant.
+slow-uart = []
 
 [profile.dev]
 panic = "abort"

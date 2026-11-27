@@ -54,6 +54,8 @@ impl Pl011 {
 
     /// Blocking write of one byte.
     pub fn putc(&self, b: u8) {
+        #[cfg(feature = "slow-uart")]
+        slow::wait_for_fifo_slot();
         // SAFETY: MMIO accesses to the UART owned by this driver.
         unsafe {
             while read_volatile(self.reg(FR)) & FR_TXFF != 0 {
@@ -105,5 +107,33 @@ impl Pl011 {
             }
             self.putc(b);
         }
+    }
+}
+
+/// `slow-uart`: make QEMU's instant UART as slow as a real one at 115200
+/// baud 8N1 (10 bits, 86.8 us per byte) with a 16-byte transmit FIFO, by
+/// busy-waiting on the generic counter. Bytes are queued on a virtual
+/// FIFO that drains one byte per 86.8 us; `putc` waits while it is full.
+#[cfg(feature = "slow-uart")]
+mod slow {
+    use crate::arch::timer;
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    const BYTE_NS: u64 = 86_806;
+    const FIFO: u64 = 16;
+
+    /// Counter value at which the virtual FIFO is empty.
+    static DRAINED_AT: AtomicU64 = AtomicU64::new(0);
+
+    pub(super) fn wait_for_fifo_slot() {
+        let byte = timer::ns_to_ticks(BYTE_NS);
+        let mut now = timer::counter();
+        let drained = DRAINED_AT.load(Ordering::Relaxed).max(now);
+        // Room for one more byte once the FIFO holds fewer than 16.
+        while drained - now > (FIFO - 1) * byte {
+            core::hint::spin_loop();
+            now = timer::counter();
+        }
+        DRAINED_AT.store(drained + byte, Ordering::Relaxed);
     }
 }

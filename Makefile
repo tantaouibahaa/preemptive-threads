@@ -19,6 +19,7 @@
 #   make run-raspi3b     run the demo on QEMU raspi3b (Ctrl-C to quit)
 #   make run-virt        run the demo on QEMU virt
 #   make clippy          lint both board configurations
+#   make test FEATURES=slow-uart  run the tests with a UART as slow as a real one at 115200 baud
 #   make demo-gif        record a shell session on QEMU virt and render docs/demo.gif (needs Pillow)
 
 CARGO        ?= cargo
@@ -37,6 +38,11 @@ SHELL_PASS   := SHELL SESSION PASSED
 # Interactive serial console: Ctrl-C goes to the guest, Ctrl-A X quits QEMU.
 CONSOLE      := -chardev stdio,id=con,mux=on,signal=off -serial chardev:con -mon chardev=con,mode=readline
 OS_PASS      := ALL [0-9]+ OS TESTS PASSED on 4 cores
+# Extra cargo features for the emulator test kernels and pt-os (e.g.
+# FEATURES=slow-uart). Never applied to the SD card images.
+FEATURES     ?=
+comma        := ,
+XF           := $(if $(FEATURES),$(comma)$(FEATURES))
 
 .PHONY: all build user test test-threads test-os test-virt test-virt-el2 test-raspi3b \
         test-os-virt test-os-virt-el2 test-os-raspi3b test-shell test-shell-virt test-shell-virt-el2 \
@@ -61,12 +67,12 @@ user:
 
 build/test-virt.elf:
 	@mkdir -p build
-	$(CARGO) build -j$(JOBS) --release --target-dir $(VIRT_DIR) --example test_kernel --features qemu-virt,semihosting
+	$(CARGO) build -j$(JOBS) --release --target-dir $(VIRT_DIR) --example test_kernel --features qemu-virt,semihosting$(XF)
 	cp $(VIRT_OUT)/test_kernel $@
 
 build/test-raspi3b.img:
 	@mkdir -p build
-	$(CARGO) build -j$(JOBS) --release --target-dir $(RPI_DIR) --example test_kernel --features semihosting
+	$(CARGO) build -j$(JOBS) --release --target-dir $(RPI_DIR) --example test_kernel --features semihosting$(XF)
 	$(OBJCOPY) -O binary $(RPI_OUT)/test_kernel $@
 
 test-virt: build/test-virt.elf
@@ -87,12 +93,12 @@ test-threads: test-virt test-virt-el2 test-raspi3b
 
 build/os-test-virt.elf: user
 	@mkdir -p build
-	$(CARGO) build -j$(JOBS) --release --target-dir $(VIRT_DIR) -p pt-os --example os_test --features qemu-virt,semihosting
+	$(CARGO) build -j$(JOBS) --release --target-dir $(VIRT_DIR) -p pt-os --example os_test --features qemu-virt,semihosting$(XF)
 	cp $(VIRT_OUT)/os_test $@
 
 build/os-test-raspi3b.img: user
 	@mkdir -p build
-	$(CARGO) build -j$(JOBS) --release --target-dir $(RPI_DIR) -p pt-os --example os_test --features semihosting
+	$(CARGO) build -j$(JOBS) --release --target-dir $(RPI_DIR) -p pt-os --example os_test --features semihosting$(XF)
 	$(OBJCOPY) -O binary $(RPI_OUT)/os_test $@
 
 test-os-virt: build/os-test-virt.elf
@@ -156,12 +162,12 @@ run-virt: build/demo-virt.elf
 
 build/pt-os-virt.elf: user
 	@mkdir -p build
-	$(CARGO) build -j$(JOBS) --release --target-dir $(VIRT_DIR) -p pt-os --bin pt-os --features qemu-virt
+	$(CARGO) build -j$(JOBS) --release --target-dir $(VIRT_DIR) -p pt-os --bin pt-os --features qemu-virt$(XF)
 	cp $(VIRT_DIR)/$(TARGET)/release/pt-os $@
 
 build/pt-os-kernel8.img: user
 	@mkdir -p build
-	$(CARGO) build -j$(JOBS) --release --target-dir $(RPI_DIR) -p pt-os --bin pt-os
+	$(CARGO) build -j$(JOBS) --release --target-dir $(RPI_DIR) -p pt-os --bin pt-os $(if $(FEATURES),--features $(FEATURES))
 	$(OBJCOPY) -O binary $(RPI_DIR)/$(TARGET)/release/pt-os $@
 
 run-os-virt: build/pt-os-virt.elf
@@ -179,9 +185,9 @@ demo-gif: build/pt-os-virt.elf
 # --- lint / docs ----------------------------------------------------------
 
 clippy: user
-	$(CARGO) clippy -j$(JOBS) --release --target-dir $(RPI_DIR) --examples --features semihosting -- -D warnings
+	$(CARGO) clippy -j$(JOBS) --release --target-dir $(RPI_DIR) --examples --features semihosting,slow-uart -- -D warnings
 	$(CARGO) clippy -j$(JOBS) --release --target-dir $(VIRT_DIR) --examples --features qemu-virt,semihosting -- -D warnings
-	$(CARGO) clippy -j$(JOBS) --release --target-dir $(RPI_DIR) -p pt-os --bins --examples --features semihosting -- -D warnings
+	$(CARGO) clippy -j$(JOBS) --release --target-dir $(RPI_DIR) -p pt-os --bins --examples --features semihosting,slow-uart -- -D warnings
 	$(CARGO) clippy -j$(JOBS) --release --target-dir $(VIRT_DIR) -p pt-os --bins --examples --features qemu-virt,semihosting -- -D warnings
 	$(CARGO) clippy -j$(JOBS) --release --target-dir $(USER_DIR) -p ulib -- -D warnings
 	$(CARGO) clippy -j$(JOBS) --release --target-dir $(USER_DIR) -p pt-userland -p pt-user-tests --bins -- -D warnings

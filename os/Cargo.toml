@@ -18,6 +18,7 @@ default = []
 # Same board selection as the core crate.
 qemu-virt = ["preemptive-threads/qemu-virt"]
 semihosting = ["preemptive-threads/semihosting"]
+slow-uart = ["preemptive-threads/slow-uart"]
 
 [lib]
 name = "pt_os"
