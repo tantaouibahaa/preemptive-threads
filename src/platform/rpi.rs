@@ -11,8 +11,12 @@ pub static UART: Pl011 = Pl011::new(0x3f20_1000);
 
 const GPIO_BASE: usize = 0x3f20_0000;
 const GPFSEL1: usize = GPIO_BASE + 0x04;
+const GPFSEL3: usize = GPIO_BASE + 0x0c;
 const GPPUD: usize = GPIO_BASE + 0x94;
 const GPPUDCLK0: usize = GPIO_BASE + 0x98;
+const GPPUDCLK1: usize = GPIO_BASE + 0x9c;
+const PUD_OFF: u32 = 0;
+const PUD_UP: u32 = 2;
 
 /// Translation tables for the BCM2837 physical map.
 pub mod memory_map {
@@ -52,28 +56,71 @@ pub mod memory_map {
     pub const L2_ENTRIES: [u64; 512] = l2();
 }
 
-fn delay(cycles: u32) {
-    for _ in 0..cycles {
+/// Full system barrier: the BCM2837's peripherals sit on different AXI
+/// ports, so accesses to two of them (or to one and to RAM) are only
+/// ordered with a DSB in between.
+#[inline(always)]
+fn dsb() {
+    // SAFETY: barrier only.
+    unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)) };
+}
+
+/// Wait at least `ns` nanoseconds on the generic counter (independent of
+/// the core clock, unlike a spin loop).
+fn delay_ns(ns: u64) {
+    let end = arch::timer::counter() + arch::timer::ns_to_ticks(ns) + 1;
+    while arch::timer::counter() < end {
         core::hint::spin_loop();
     }
 }
 
-/// Bring up the console: GPIO14/15 to ALT0 (PL011), 115200 8N1 assuming the
-/// firmware's default 48 MHz UART clock (IBRD 26, FBRD 3).
+/// Set the pull-up/down of the GPIOs in `mask0` (0-31) and `mask1` (32-53)
+/// with the BCM2835 GPPUD/GPPUDCLK sequence: each step must be held for at
+/// least 150 cycles of the VPU clock (at most 400 MHz, so 375 ns); 2 us is
+/// used.
+///
+/// # Safety
+///
+/// GPIO MMIO; the pins must belong to the caller.
+unsafe fn set_pull(pud: u32, mask0: u32, mask1: u32) {
+    use core::ptr::write_volatile;
+    // SAFETY: forwarded to the caller.
+    unsafe {
+        write_volatile(GPPUD as *mut u32, pud);
+        dsb();
+        delay_ns(2_000);
+        write_volatile(GPPUDCLK0 as *mut u32, mask0);
+        write_volatile(GPPUDCLK1 as *mut u32, mask1);
+        dsb();
+        delay_ns(2_000);
+        write_volatile(GPPUD as *mut u32, PUD_OFF);
+        write_volatile(GPPUDCLK0 as *mut u32, 0);
+        write_volatile(GPPUDCLK1 as *mut u32, 0);
+        dsb();
+    }
+}
+
+/// Bring up the console: GPIO14/15 to ALT0 (PL011) with a pull-up on RXD
+/// (an unconnected RX then reads idle instead of noise) and none on TXD,
+/// GPIO32/33 (where the firmware puts the PL011 for Bluetooth) to plain
+/// inputs, then 115200 8N1 assuming the firmware's 48 MHz UART clock
+/// (`init_uart_clock=48000000`: IBRD 26, FBRD 3).
 pub fn early_init(_boot_el: u8) {
     use core::ptr::{read_volatile, write_volatile};
-    // SAFETY: GPIO MMIO, only pins 14 and 15 are touched.
+    // SAFETY: GPIO MMIO, only pins 14, 15, 32 and 33 are touched.
     unsafe {
+        dsb();
+        let mut sel = read_volatile(GPFSEL3 as *const u32);
+        sel &= !((7 << 6) | (7 << 9)); // GPIO32/33: input
+        write_volatile(GPFSEL3 as *mut u32, sel);
         let mut sel = read_volatile(GPFSEL1 as *const u32);
         sel &= !((7 << 12) | (7 << 15));
-        sel |= (4 << 12) | (4 << 15);
+        sel |= (4 << 12) | (4 << 15); // GPIO14/15: ALT0
         write_volatile(GPFSEL1 as *mut u32, sel);
-        write_volatile(GPPUD as *mut u32, 0);
-        delay(150);
-        write_volatile(GPPUDCLK0 as *mut u32, (1 << 14) | (1 << 15));
-        delay(150);
-        write_volatile(GPPUDCLK0 as *mut u32, 0);
+        set_pull(PUD_OFF, 1 << 14, 0);
+        set_pull(PUD_UP, 1 << 15, 0);
         UART.init((26, 3));
+        dsb();
     }
 }
 
