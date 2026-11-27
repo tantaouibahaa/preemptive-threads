@@ -1,10 +1,11 @@
 //! Serial console (`println!`-style macros over the board's PL011).
 //!
 //! Output is polled, so a long write takes real time: at 115200 baud a
-//! byte takes 87 us and a 4 KiB write a third of a second. It is therefore
-//! sent in chunks of at most [`CHUNK`] bytes, with the console lock (and
-//! the IRQ mask it implies) held for one chunk only, and a writer waiting
-//! for the lock spins with its interrupts as they were, not masked.
+//! byte takes 87 us and a 4 KiB write a third of a second. The console
+//! lock (and the IRQ mask it implies) is therefore only held while bytes
+//! go straight into the UART's transmit FIFO, at most [`CHUNK`] at a time;
+//! waiting for FIFO room, or for the lock, happens with interrupts as the
+//! writer had them.
 //!
 //! Each `print!`, `println!` or [`write_bytes`] call still comes out as one
 //! unit: between its chunks the call keeps ownership of the console, and
@@ -82,22 +83,34 @@ impl Writer {
         }
     }
 
-    /// Send `bytes`, translating `\n` to `\r\n`, [`CHUNK`] bytes at a time.
+    /// Send `bytes`, translating `\n` to `\r\n`. The console lock is only
+    /// held while bytes go straight into the UART's transmit FIFO (at most
+    /// [`CHUNK`] of them); waiting for FIFO room happens without it.
     fn write(&self, mut bytes: &[u8]) {
+        let mut cr_sent = false;
         while !bytes.is_empty() {
+            while !UART.tx_ready() {
+                core::hint::spin_loop();
+            }
             let mut g = self.acquire();
             let mut sent = 0;
             while let Some((&b, rest)) = bytes.split_first() {
-                if sent + 2 > CHUNK {
+                if sent == CHUNK {
                     break;
                 }
-                if b == b'\n' {
-                    UART.putc(b'\r');
-                    sent += 1;
+                if b == b'\n' && !cr_sent {
+                    if !UART.try_putc(b'\r') {
+                        break;
+                    }
+                    cr_sent = true;
+                } else {
+                    if !UART.try_putc(b) {
+                        break;
+                    }
+                    cr_sent = false;
+                    bytes = rest;
                 }
-                UART.putc(b);
                 sent += 1;
-                bytes = rest;
             }
             g.last = arch::timer::counter();
         }

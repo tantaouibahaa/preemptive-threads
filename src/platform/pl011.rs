@@ -52,16 +52,31 @@ impl Pl011 {
         }
     }
 
+    /// Whether the transmit FIFO has room for a byte.
+    pub fn tx_ready(&self) -> bool {
+        // SAFETY: MMIO read of the UART owned by this driver.
+        let room = unsafe { read_volatile(self.reg(FR)) } & FR_TXFF == 0;
+        #[cfg(feature = "slow-uart")]
+        let room = room && slow::has_room();
+        room
+    }
+
+    /// Queue one byte if the transmit FIFO has room; never waits.
+    pub fn try_putc(&self, b: u8) -> bool {
+        if !self.tx_ready() {
+            return false;
+        }
+        #[cfg(feature = "slow-uart")]
+        slow::push();
+        // SAFETY: MMIO write to the UART owned by this driver.
+        unsafe { write_volatile(self.reg(DR), b as u32) };
+        true
+    }
+
     /// Blocking write of one byte.
     pub fn putc(&self, b: u8) {
-        #[cfg(feature = "slow-uart")]
-        slow::wait_for_fifo_slot();
-        // SAFETY: MMIO accesses to the UART owned by this driver.
-        unsafe {
-            while read_volatile(self.reg(FR)) & FR_TXFF != 0 {
-                core::hint::spin_loop();
-            }
-            write_volatile(self.reg(DR), b as u32);
+        while !self.try_putc(b) {
+            core::hint::spin_loop();
         }
     }
 
@@ -111,9 +126,9 @@ impl Pl011 {
 }
 
 /// `slow-uart`: make QEMU's instant UART as slow as a real one at 115200
-/// baud 8N1 (10 bits, 86.8 us per byte) with a 16-byte transmit FIFO, by
-/// busy-waiting on the generic counter. Bytes are queued on a virtual
-/// FIFO that drains one byte per 86.8 us; `putc` waits while it is full.
+/// baud 8N1 (10 bits, 86.8 us per byte) with a 16-byte transmit FIFO, timed
+/// on the generic counter: bytes go into a virtual FIFO that drains one
+/// byte per 86.8 us, and the UART reports itself full while it holds 16.
 #[cfg(feature = "slow-uart")]
 mod slow {
     use crate::arch::timer;
@@ -125,15 +140,13 @@ mod slow {
     /// Counter value at which the virtual FIFO is empty.
     static DRAINED_AT: AtomicU64 = AtomicU64::new(0);
 
-    pub(super) fn wait_for_fifo_slot() {
-        let byte = timer::ns_to_ticks(BYTE_NS);
-        let mut now = timer::counter();
-        let drained = DRAINED_AT.load(Ordering::Relaxed).max(now);
-        // Room for one more byte once the FIFO holds fewer than 16.
-        while drained - now > (FIFO - 1) * byte {
-            core::hint::spin_loop();
-            now = timer::counter();
-        }
-        DRAINED_AT.store(drained + byte, Ordering::Relaxed);
+    pub(super) fn has_room() -> bool {
+        let now = timer::counter();
+        DRAINED_AT.load(Ordering::Relaxed).saturating_sub(now) <= (FIFO - 1) * timer::ns_to_ticks(BYTE_NS)
+    }
+
+    pub(super) fn push() {
+        let start = DRAINED_AT.load(Ordering::Relaxed).max(timer::counter());
+        DRAINED_AT.store(start + timer::ns_to_ticks(BYTE_NS), Ordering::Relaxed);
     }
 }
