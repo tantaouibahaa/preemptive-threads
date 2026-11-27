@@ -1,10 +1,16 @@
 //! Wait queues: the primitive every blocking operation is built on.
 
 use crate::arch;
-use crate::sched::{self, Tcb};
+use crate::sched::{self, BlockedOn, Tcb};
 use crate::sync::spin::{IrqSpinLock, IrqSpinLockGuard};
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
+use core::sync::atomic::Ordering;
+
+/// An interruptible wait was cut short by
+/// [`crate::thread::Thread::interrupt`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Interrupted;
 
 /// A queue of blocked threads, ordered by priority (FIFO within a
 /// priority).
@@ -49,6 +55,57 @@ impl WaitQueue {
             }
             sched::schedule();
             arch::irq_restore(irq);
+        }
+    }
+
+    /// Like [`wait_until`](Self::wait_until), but give up with
+    /// [`Interrupted`] once the thread is interrupted
+    /// ([`crate::thread::Thread::interrupt`]), even while it is blocked.
+    ///
+    /// `cond` is checked first, so a condition that is already true wins
+    /// over a pending interrupt.
+    pub fn wait_until_interruptible(&self, mut cond: impl FnMut() -> bool) -> Result<(), Interrupted> {
+        let me = sched::current();
+        sched::set_blocked_on(&me, BlockedOn::Queue(self as *const Self as usize));
+        let mut queued_once = false;
+        let r = loop {
+            let irq = arch::irq_save();
+            {
+                let mut q = self.waiters.lock_irqs_off();
+                if cond() {
+                    drop(q);
+                    arch::irq_restore(irq);
+                    break Ok(());
+                }
+                if me.interrupt_pending.load(Ordering::SeqCst) {
+                    drop(q);
+                    arch::irq_restore(irq);
+                    break Err(Interrupted);
+                }
+                Self::push_current(&mut q);
+            }
+            queued_once = true;
+            sched::schedule();
+            arch::irq_restore(irq);
+        };
+        sched::set_blocked_on(&me, BlockedOn::Nothing);
+        if r.is_err() && queued_once {
+            // A `wake_one` may have picked us just as we were interrupted:
+            // pass it on so no other waiter misses it.
+            self.wake_one();
+        }
+        r
+    }
+
+    /// Take `t` off the queue. Returns whether it was queued.
+    pub(crate) fn remove(&self, t: &Arc<Tcb>) -> bool {
+        let mut q = self.waiters.lock();
+        match q.iter().position(|x| Arc::ptr_eq(x, t)) {
+            Some(i) => {
+                q.remove(i);
+                true
+            }
+            None => false,
         }
     }
 

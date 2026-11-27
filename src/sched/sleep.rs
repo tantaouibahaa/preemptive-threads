@@ -1,6 +1,6 @@
 //! Timed sleeps: a deadline-ordered queue checked on every timer tick.
 
-use super::{mark_current_blocked, schedule, wake, Tcb};
+use super::{mark_current_blocked, schedule, set_blocked_on, wake, BlockedOn, Tcb};
 use crate::arch;
 use crate::sync::spin::IrqSpinLock;
 use alloc::sync::Arc;
@@ -22,6 +22,46 @@ pub(crate) fn sleep_until(deadline: u64) {
     }
     schedule();
     arch::irq_restore(irq);
+}
+
+/// Like [`sleep_until`], but return `false` early if the thread is
+/// interrupted (see [`super::interrupt`]). Returns `true` if the deadline
+/// was reached.
+pub(crate) fn sleep_until_interruptible(deadline: u64) -> bool {
+    let me = super::current();
+    set_blocked_on(&me, BlockedOn::Sleep);
+    let irq = arch::irq_save();
+    let queued = {
+        let mut q = SLEEPERS.lock_irqs_off();
+        if me.interrupt_pending.load(Ordering::SeqCst) {
+            false
+        } else {
+            let t = mark_current_blocked();
+            let pos = q.partition_point(|(d, _)| *d <= deadline);
+            q.insert(pos, (deadline, t));
+            EARLIEST.store(q[0].0, Ordering::Release);
+            true
+        }
+    };
+    if queued {
+        schedule();
+    }
+    arch::irq_restore(irq);
+    set_blocked_on(&me, BlockedOn::Nothing);
+    !me.interrupt_pending.load(Ordering::SeqCst) || arch::timer::counter() >= deadline
+}
+
+/// Take `t` off the sleep queue. Returns whether it was there.
+pub(crate) fn remove(t: &Arc<Tcb>) -> bool {
+    let mut q = SLEEPERS.lock();
+    match q.iter().position(|(_, x)| Arc::ptr_eq(x, t)) {
+        Some(i) => {
+            q.remove(i);
+            EARLIEST.store(q.first().map_or(u64::MAX, |(d, _)| *d), Ordering::Release);
+            true
+        }
+        None => false,
+    }
 }
 
 /// Wake every sleeper whose deadline has passed (called from the tick).

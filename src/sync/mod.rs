@@ -20,4 +20,4 @@ pub use condvar::Condvar;
 pub use mutex::{Mutex, MutexGuard};
 pub use semaphore::Semaphore;
 pub use spin::{IrqSpinLock, IrqSpinLockGuard, SpinLock, SpinLockGuard};
-pub use waitqueue::WaitQueue;
+pub use waitqueue::{Interrupted, WaitQueue};

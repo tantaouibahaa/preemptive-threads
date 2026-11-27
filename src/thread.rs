@@ -3,7 +3,7 @@
 use crate::errors::SpawnError;
 use crate::mem::DEFAULT_STACK_SIZE;
 use crate::sched::{self, priority, NewThread, Tcb, ThreadId};
-use crate::sync::{IrqSpinLock, WaitQueue};
+use crate::sync::{Interrupted, IrqSpinLock, WaitQueue};
 use crate::time::{Duration, Instant};
 use crate::arch;
 use alloc::boxed::Box;
@@ -165,6 +165,32 @@ impl Thread {
     pub fn interrupt_user(&self) {
         sched::interrupt_user(&self.tcb);
     }
+
+    /// Interrupt the thread: it leaves user mode (as with
+    /// [`interrupt_user`](Self::interrupt_user)), and every interruptible
+    /// wait it is in or enters from now on
+    /// ([`WaitQueue::wait_until_interruptible`],
+    /// [`sleep_interruptible`]) returns [`Interrupted`]. The flag is
+    /// sticky; it is meant for killing a thread that may be blocked in the
+    /// kernel.
+    pub fn interrupt(&self) {
+        sched::interrupt(&self.tcb);
+    }
+
+    /// Whether [`interrupt`](Self::interrupt) was called.
+    pub fn is_interrupted(&self) -> bool {
+        self.tcb.interrupt_pending.load(Ordering::SeqCst)
+    }
+
+    /// CPU time the thread has used so far.
+    pub fn cpu_time(&self) -> Duration {
+        Duration::from_nanos(arch::timer::ticks_to_ns(sched::run_ticks(&self.tcb)))
+    }
+
+    /// The core the thread is running on, last ran on, or is queued on.
+    pub fn cpu(&self) -> usize {
+        sched::thread_cpu(&self.tcb)
+    }
 }
 
 impl core::fmt::Debug for Thread {
@@ -213,6 +239,19 @@ pub fn sleep(d: Duration) {
         return;
     }
     sleep_until(Instant::now() + d);
+}
+
+/// Block the calling thread for at least `d`, unless it is interrupted
+/// ([`Thread::interrupt`]) first.
+pub fn sleep_interruptible(d: Duration) -> Result<(), Interrupted> {
+    if sched::current().interrupt_pending.load(Ordering::SeqCst) {
+        return Err(Interrupted);
+    }
+    if sched::sleep::sleep_until_interruptible((Instant::now() + d).ticks()) {
+        Ok(())
+    } else {
+        Err(Interrupted)
+    }
 }
 
 /// Block the calling thread until `deadline`.

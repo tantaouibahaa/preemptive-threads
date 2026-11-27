@@ -134,6 +134,26 @@ pub struct Tcb {
     ttbr0: AtomicU64,
     /// Set by [`interrupt_user`]: leave user mode at the next opportunity.
     user_interrupt: AtomicBool,
+    /// Set by [`interrupt`]: interruptible waits return early (sticky).
+    pub(crate) interrupt_pending: AtomicBool,
+    /// What the thread is blocked on in an interruptible wait, so
+    /// [`interrupt`] can take it off that queue and wake it.
+    pub(crate) blocked_on: crate::sync::spin::IrqSpinLock<BlockedOn>,
+    /// Counter ticks spent running, up to the last switch out.
+    run_ticks: AtomicU64,
+    /// Counter value when the thread was last switched in.
+    switched_in: AtomicU64,
+}
+
+/// Where a thread in an interruptible wait is queued.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BlockedOn {
+    /// Not in an interruptible wait.
+    Nothing,
+    /// A [`crate::sync::WaitQueue`] (its address).
+    Queue(usize),
+    /// The sleep queue.
+    Sleep,
 }
 
 // SAFETY: the UnsafeCell fields are only touched by the scheduler under the
@@ -248,6 +268,10 @@ pub(crate) fn create_thread(p: NewThread, f: StartFn) -> Result<Arc<Tcb>, crate:
         start: UnsafeCell::new(Some(f)),
         ttbr0: AtomicU64::new(0),
         user_interrupt: AtomicBool::new(false),
+        interrupt_pending: AtomicBool::new(false),
+        blocked_on: crate::sync::spin::IrqSpinLock::new(BlockedOn::Nothing),
+        run_ticks: AtomicU64::new(0),
+        switched_in: AtomicU64::new(0),
     });
     // SAFETY: the stack is fresh and exclusively ours; the TCB is not yet
     // visible to any other core.
@@ -286,6 +310,10 @@ pub(crate) fn init_idle_thread(cpu: &PerCpu) {
         start: UnsafeCell::new(None),
         ttbr0: AtomicU64::new(0),
         user_interrupt: AtomicBool::new(false),
+        interrupt_pending: AtomicBool::new(false),
+        blocked_on: crate::sync::spin::IrqSpinLock::new(BlockedOn::Nothing),
+        run_ticks: AtomicU64::new(0),
+        switched_in: AtomicU64::new(0),
     });
     // SAFETY: called once per core during boot, IRQs masked.
     unsafe {
@@ -532,6 +560,9 @@ fn schedule_impl(preempting: bool) {
         return;
     }
 
+    let now = arch::timer::counter();
+    prev.run_ticks.fetch_add(now.saturating_sub(prev.switched_in.load(Ordering::Relaxed)), Ordering::Relaxed);
+    next.switched_in.store(now, Ordering::Relaxed);
     next.on_cpu.store(true, Ordering::Relaxed);
     next.set_state(RUNNING);
     next.last_cpu.store(cpu.id, Ordering::Relaxed);
@@ -633,6 +664,54 @@ pub(crate) fn interrupt_user(t: &Arc<Tcb>) {
     t.user_interrupt.store(true, Ordering::Release);
     if t.state.load(Ordering::Acquire) == RUNNING {
         kick(t.last_cpu.load(Ordering::Relaxed));
+    }
+}
+
+/// Interrupt `t`: mark it interrupted (sticky), make it leave user mode,
+/// and if it is blocked in an interruptible wait, take it off that queue
+/// and wake it so the wait returns [`crate::sync::Interrupted`].
+///
+/// Lock order: the thread's `blocked_on` lock, then the queue's lock. A
+/// waiter only takes them one at a time, and checks `interrupt_pending`
+/// under the queue lock before queueing itself, so either it sees the flag
+/// or this finds it queued.
+pub(crate) fn interrupt(t: &Arc<Tcb>) {
+    t.interrupt_pending.store(true, Ordering::SeqCst);
+    interrupt_user(t);
+    let b = t.blocked_on.lock();
+    let removed = match *b {
+        BlockedOn::Nothing => false,
+        // SAFETY: the waiter clears `blocked_on` (under this lock) before
+        // its wait returns, and the queue outlives the wait call that
+        // borrows it; we hold the lock, so the queue is still alive.
+        BlockedOn::Queue(addr) => unsafe { (*(addr as *const crate::sync::WaitQueue)).remove(t) },
+        BlockedOn::Sleep => sleep::remove(t),
+    };
+    if removed {
+        wake(t.clone());
+    }
+}
+
+/// Record what the calling thread is about to wait on (interruptibly).
+pub(crate) fn set_blocked_on(t: &Tcb, b: BlockedOn) {
+    *t.blocked_on.lock() = b;
+}
+
+/// Counter ticks `t` has spent running, including the current stint.
+pub(crate) fn run_ticks(t: &Tcb) -> u64 {
+    let base = t.run_ticks.load(Ordering::Relaxed);
+    if t.state.load(Ordering::Acquire) == RUNNING && t.on_cpu.load(Ordering::Acquire) {
+        base + arch::timer::counter().saturating_sub(t.switched_in.load(Ordering::Relaxed))
+    } else {
+        base
+    }
+}
+
+/// The core `t` runs on, last ran on, or is queued on.
+pub(crate) fn thread_cpu(t: &Tcb) -> usize {
+    match t.state.load(Ordering::Acquire) {
+        READY => t.rq_cpu.load(Ordering::Relaxed),
+        _ => t.last_cpu.load(Ordering::Relaxed),
     }
 }
 
