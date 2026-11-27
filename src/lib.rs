@@ -17,6 +17,10 @@
 //!   thread's value.
 //! - A real heap (`alloc` works), stack pooling and reclamation of
 //!   finished threads.
+//! - The mechanisms for user processes: EL0 entry and exit
+//!   ([`arch::user`]), lower-EL trap vectors, per-process page tables with
+//!   ASIDs, a physical frame allocator and interruptible waits. `pt-os`,
+//!   the kernel in the repository's `os/` directory, builds on them.
 //!
 //! # Using it
 //!

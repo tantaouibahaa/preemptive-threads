@@ -3,8 +3,9 @@
 This document describes how preemptive-threads gets from reset to four cores
 switching threads: the boot path, the memory map, the context layout, the
 interrupt flow and the SMP scheduler. Section 6 covers user processes
-(`os/`, the `pt-os` kernel): address spaces, EL0 entry and exit, system
-calls and the process lifecycle.
+(`os/`, the `pt-os` kernel): address spaces, EL0 entry and exit, the path
+of a system call, the file system, pipes, the console, the shell and the
+process lifecycle.
 
 ## 1. Boot
 
@@ -258,6 +259,21 @@ A process is **one kernel thread plus an address space**. Everything else
 (scheduling, preemption, migration between cores) is the thread machinery
 above, unchanged.
 
+```text
+ EL0  ┌──────────────────────────────────────────────────────────────────┐
+      │ sh  ls  cat  grep  wc  ps  top  primes  mandel  stress  crash ... │ user/bin: static ELF64,
+      │ ulib: _start/argv, system call wrappers, println!, heap on sbrk   │ one address space each
+      └───────────────▲──────────────────────────────┬───────────────────┘
+          eret        │                              │ svc #0, faults, IRQs
+ EL1  ┌───────────────┴──────────────────────────────▼───────────────────┐
+      │ pt-os (os/): process table, ELF loader, 26 system calls, ramfs +  │
+      │ initrd, fd tables, pipes, console line discipline, shell boot     │
+      ├───────────────────────────────────────────────────────────────────┤
+      │ preemptive-threads (src/): 4-core scheduler, sync, EL0 entry and   │
+      │ exit, page tables + ASIDs, frame allocator, GIC / BCM2836, PL011  │
+      └───────────────────────────────────────────────────────────────────┘
+```
+
 ### Address spaces
 
 ```text
@@ -347,7 +363,8 @@ above, unchanged.
      read ESR/FAR, unmask IRQs, return UserExit
      classify: syscall ─► dispatch, x0 = result
                wfi/wfe  ─► yield
-               fault    ─► "[pid N] <reason> at <addr>", status -signal
+               fault    ─► "[pid N] <reason> at <addr> (pc <pc>)",
+                            status -signal
    }
 ```
 
@@ -362,7 +379,9 @@ above, unchanged.
   process's kernel thread with IRQs enabled, so they can block (sleep,
   wait) and be preempted.
 * A fault taken at EL1 is still fatal (register dump and halt); only EL0
-  faults kill a process.
+  faults kill a process. The kernel reports it with one line on the
+  console, e.g. `[pid 14] segfault (write) at 0x0 (pc 0x4000100160)`;
+  the shell does not add a second one.
 
 ### System calls
 
@@ -396,6 +415,35 @@ failure. The table is in `os/src/syscall.rs`:
   switches. `ps` and `top` are built on them.
 * `ioctl`: 1 = console raw mode on/off, 2 = bytes readable without
   blocking, 3 = is this fd the console.
+
+#### The path of a system call
+
+`println!("hi")` in a user program, end to end:
+
+```text
+ EL0  ulib::write(1, buf, 3): x8 = 1, x0 = fd, x1 = buf, x2 = len; svc #0
+ ───── exception: EL0 ─► EL1 (SP_EL1 = the process thread's kernel stack) ─────
+ EL1  vector 0x400 (sync, lower EL): save x0-x30, ELR, SPSR, SP_EL0, FP/SIMD
+        into the TrapFrame that KCTX on the stack points to; pop KCTX and
+        return from __pt_run_user as if it were a call
+      run_user returns UserExit::Exception { esr, far }; IRQs back on
+      classify(esr): EC 0x15, imm 0 ─► syscall::dispatch(process, frame)
+      sys_write: fd 1 in the process's fd table ─► File { Console }
+        copy_from_user in steps of up to 4 KiB: range checked against the
+        VMAs, translated through the process's own tables, copied via the
+        kernel's identity map (a bad pointer is EFAULT, never a kernel fault)
+        ─► console::write ─► PL011 transmit, under the console lock
+      frame.x[0] = 3 (bytes written) or -errno
+      kill pending? ─► exit the process instead
+      run_user(&mut frame): restore the registers, eret
+ ───── EL1 ─► EL0 ─────────────────────────────────────────────────────────────
+ EL0  continues after the svc with x0 = 3
+```
+
+A blocking call (`read` on the console or a pipe, `wait`, `sleep`) blocks
+the process's kernel thread on a wait queue in the middle of this path;
+the core runs other threads meanwhile, and the call may finish on another
+core. The wait is interruptible, so `kill` and Ctrl-C end it with `EINTR`.
 
 ### File system and file descriptors
 
@@ -490,13 +538,28 @@ work), `File`, `LineReader`, `read_dir`, `stat`, `SpawnAttr`, `procinfo`
 and `sysinfo`. Processes are single threaded, so the allocator needs no lock.
 
 `/bin`: `sh` (quotes, `|` pipelines of any length, `<`, `>`, `>>`, `&` with
-`[pid N] started on cpuX`, `jobs`, `wait`, `kill`, `cd`, `pwd`, `exit`,
-`help`; reports `[pid N] segfault` / `killed` / `interrupted`), `ls`,
-`cat`, `echo`, `wc`, `grep`, `ps`, `top` (per-core load and which process
-runs where; any key or `-n N` ends it), `hello`, `primes N` (sieve),
-`mandel` (4 worker processes joined through pipes), `stress N` (spawn/exit
-loop, checks the free frame count comes back), `crash`, `spin`, `sleep`,
-`rm`, `mkdir`.
+`[pid N] started on cpuX`, lists with `;` and `&&`, `jobs`, `wait`, `kill`,
+`cd`, `pwd`, `exit`, `help`; reports `[pid N] killed` / `interrupted` and
+finished background jobs), `ls`, `cat`, `echo`, `wc`, `grep`, `ps`, `top`
+(per-core load and which process runs where; any key or `-n N` ends it),
+`hello`, `primes N` (sieve), `mandel` (an ASCII Mandelbrot set from 4
+worker processes joined through pipes; 78x32 at 150000 iterations by
+default, about 0.3 s on QEMU), `stress N` (spawn/exit loop, checks the
+free frame count comes back), `crash`, `spin`, `sleep`, `rm`, `mkdir`.
+
+**Jobs and Ctrl-C.** Each job (one command or pipeline) gets its own
+process group, led by its first process. For a foreground job the shell
+makes that group the console's foreground group (`setfg`) and waits for
+every process in it; Ctrl-C kills the group with status -2 and the shell
+prints `[pid N] interrupted`. A background job keeps its group but is
+never made the foreground. `wait` makes each waited-for job the
+foreground in turn, so Ctrl-C during `wait` interrupts the job it is
+waiting for and returns to the prompt (the other jobs keep running). With
+no foreground group, Ctrl-C only abandons the line being typed.
+
+**Lists.** `a ; b` runs both; `a && b` runs `b` only if `a` exited 0 (a
+pipeline's status is its last stage's, a command not found is 127);
+`a & b` starts `a` in the background and runs `b`.
 
 ### Process lifecycle
 
@@ -552,5 +615,13 @@ counts back at their baseline.
 with QEMU's serial port on a pipe and types a session into it a character
 at a time, through the PL011 receive interrupt: `echo hi | wc`, `ls /bin`,
 `primes 100000 &` and `wait`, `cat /etc/motd > /tmp/x` and `cat /tmp/x`,
-`>>`, `<`, a 3-stage pipeline, `crash` (the shell survives), and Ctrl-C on
-a running `spin`. It runs on virt, virt-el2 and raspi3b in CI.
+`>>`, `<`, a 3-stage pipeline, `crash` (exactly one fault line, with the
+address and pc; the shell survives), `;` and `&&`, `mandel`, Ctrl-C on a
+running `spin`, and Ctrl-C during `wait` for a background `spin` (17
+checks). It runs on virt, virt-el2 and raspi3b in CI.
+
+`scripts/shell-session.py --record=FILE.cast` types a shorter demo at human
+speed (every step still checked) and saves the serial output with its
+timing as an asciicast; `scripts/cast2gif.py` replays it through a small
+terminal emulator into `docs/demo.gif`, the recording at the top of the
+README.

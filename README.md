@@ -1,14 +1,150 @@
-# preemptive-threads
+# preemptive-threads / pt-os
 
-Preemptive, SMP threading for bare-metal AArch64, in Rust, with no operating
-system underneath. Targets the **Raspberry Pi Zero 2 W** (BCM2837, 4x
-Cortex-A53) and runs on QEMU's `raspi3b` and `virt` machines.
+**A multicore OS kernel in Rust that runs isolated user programs (EL0,
+per-process address spaces) on QEMU and the Raspberry Pi, built on the
+preemptive-threads core.**
 
-The crate owns everything from the first instruction: exception-level drop,
-MMU, exception vectors, interrupt controllers, secondary-core bring-up, heap,
-scheduler and synchronisation primitives. An application provides one
-function and gets threads that are preempted by the timer and spread across
-all four cores.
+![pt-os: a shell session on QEMU virt with four Cortex-A53 cores](docs/demo.gif)
+
+*A real session, recorded from pt-os's serial port on QEMU `virt` (4x
+Cortex-A53). It shows `ls /bin`, a background `primes` job and `wait`, a
+pipeline, `top` with a background `spin` holding one core, `mandel` on four
+worker processes, `crash` being killed while the shell carries on, and
+Ctrl-C on `spin`. The keystrokes went through the PL011 receive interrupt
+and the kernel's line discipline. The output and timing are as recorded
+(`scripts/shell-session.py --record`, rendered by `scripts/cast2gif.py`),
+with pauses over 2.5 s shortened.*
+
+pt-os boots on all four cores with nothing underneath, unpacks an initrd
+into a RAM file system and starts a shell. Every program runs at EL0 in
+its own address space and talks to the kernel through `svc #0`. A
+program that faults is killed alone, with a one-line report, and
+everything else keeps running. Underneath is `preemptive-threads`, a
+`no_std` crate that owns everything from the first instruction:
+exception-level drop, MMU, vectors, interrupt controllers, secondary-core
+bring-up, heap, a preemptive SMP scheduler and its synchronisation
+primitives. The crate can also be used on its own as a threading library
+(see [Using the core crate](#using-the-core-crate)).
+
+## Quick start
+
+Requirements: Rust 1.88 or newer with the `aarch64-unknown-none` target and
+`llvm-tools`, plus QEMU 8 or newer.
+
+```bash
+rustup target add aarch64-unknown-none
+rustup component add llvm-tools
+brew install qemu            # or: sudo apt install qemu-system-arm
+
+make run-os-virt             # pt-os on QEMU virt, 4 cores; Ctrl-A X quits QEMU
+```
+
+`make run-os-virt` builds the user programs, packs them into the initrd,
+builds the kernel and drops you at the prompt:
+
+```text
+pt-os> ls /bin
+pt-os> primes 50000000 &
+[pid 3] started on cpu0
+pt-os> wait
+pt-os> cat /etc/motd | grep pt-os | wc
+pt-os> top                   # per-core load; any key quits
+pt-os> mandel
+pt-os> crash                 # killed, with one line: [pid N] segfault (write) at 0x0 (pc ...)
+pt-os> echo still alive && spin 60000      # then Ctrl-C
+pt-os> help
+```
+
+`make run-os-raspi3b` does the same on QEMU's Raspberry Pi 3 machine.
+
+## Features
+
+| Area | What |
+|------|------|
+| User processes | EL0 programs in per-process address spaces: private page tables, 8-bit ASIDs (no TLB flush on a switch), the kernel mapped EL1-only and never executable from EL0. A static ELF64 loader with W^X, `sbrk` heaps, guarded stacks, argv. |
+| Isolation and faults | User pointers are never dereferenced: `copy_from_user`/`copy_to_user` check the process's VMAs (no PAN on the Cortex-A53). A data abort, bad jump or undefined instruction kills only that process, with one line such as `[pid 14] segfault (write) at 0x0 (pc 0x4000100160)`. Every frame, page table and ASID goes back on exit. |
+| System calls | 26 calls through `svc #0`. Processes: `spawn` with fd mappings and process groups, `wait`, `kill`, `procinfo`, `sysinfo`. Files: `open`, `read`, `write`, `readdir`, `stat`, `mkdir`, `unlink`, `chdir`. Also `pipe`, `dup2`, `sleep`, `sbrk`, `setfg` and console `ioctl`s. |
+| File system | A writable ramfs unpacked from a cpio initrd generated at build time, per-process fd tables with POSIX sharing semantics, 4 KiB pipes with EOF and `EPIPE`, `/dev/console` and `/dev/null`. |
+| Console | The PL011 receive interrupt on both boards, feeding a line discipline: echo, backspace, Ctrl-U, Ctrl-D, raw mode. Ctrl-C kills the foreground process group. |
+| Userland | `ulib` (`_start`, syscall wrappers, `println!`, a heap over `sbrk`, files) and 17 programs. `sh` has pipelines, `<` `>` `>>`, `&` jobs, `;` and `&&`, `jobs`, `wait`, `kill`, `cd`, and Ctrl-C for the foreground job or a `wait`. Also `ls`, `cat`, `echo`, `wc`, `grep`, `ps`, `top`, `primes`, `mandel`, `stress`, `crash`, `spin`, `sleep`, `rm`, `mkdir`. |
+| Scheduler (core crate) | Preemption on all four cores (1 kHz tick), per-core run queues with four priority bands, round-robin or FIFO, work stealing, reschedule IPIs, CPU affinity. One context-switch path for yield, block, exit and IRQ preemption, with full FP/SIMD state. |
+| Synchronisation (core crate) | `Mutex` with priority inheritance and hand-off, `Semaphore`, `Condvar`, bounded MPMC `channel`, wait queues (also interruptible ones), `sleep` on a deadline queue, `JoinHandle::join` returning the thread's value. |
+| Hardware bring-up (core crate) | EL3/EL2 to EL1 drop, identity-mapped MMU with caches on every core, GICv2 or the BCM2836 ARM-local controller, PSCI or spin-table secondary start, PL011 at 115200 baud, crash dumps with decoded ESR. |
+
+## Status and tests
+
+`make test` runs every row below on all three QEMU machines, and GitHub
+Actions runs it on every push.
+
+| Machine | thread tests (`make test-threads`) | OS tests (`make test-os`) | shell session (`make test-shell`) |
+|---------|------------------|--------------|----------------|
+| QEMU `virt`, entered at EL1 (PSCI over HVC) | 16/16 | 21/21 | 17/17 checks |
+| QEMU `virt,virtualization=on`, entered at EL2 (EL2 to EL1 drop, PSCI over SMC) | 16/16 | 21/21 | 17/17 checks |
+| QEMU `raspi3b`, flat image released through the spin-table stub at EL2, like the Pi firmware | 16/16 | 21/21 | 17/17 checks |
+| Real Raspberry Pi Zero 2 W | verified on QEMU raspi3b; real Pi Zero 2 W pending | | |
+
+- **Thread tests** (`examples/test_kernel.rs`) check SMP boot,
+  preemption, join values, mutexes under contention, channels, sleep
+  accuracy, priority inheritance and bands, FIFO, semaphores, condvars, FP
+  state across preemption, and that threads are reaped without leaks.
+- **OS tests** (`os/examples/os_test.rs`) check exit codes; writes to
+  kernel memory, executing kernel code and undefined instructions killing
+  only the process; isolation between processes; `sbrk`; preemption of a
+  syscall-free loop; 32 processes over 4 cores; rejected ELF images; ASID
+  exhaustion. They also cover the file system, fd inheritance, pipe EOF and
+  `EPIPE`, `EINTR`, the line discipline, Ctrl-C and a whole shell session,
+  and check that frames and ASIDs come back to their baseline.
+- **Shell session** (`scripts/shell-session.py`) boots the real pt-os
+  image and types into its serial port one character at a time. It
+  covers pipes, `ls`, a background job and `wait`, redirects, a 3-stage
+  pipeline, `crash` (exactly one fault line), `;` and `&&`, `mandel`,
+  Ctrl-C on a running job and Ctrl-C during `wait`.
+
+The test kernels exit QEMU through semihosting, so the exit status is the
+verdict. A watchdog in `scripts/qemu-run.sh` kills hangs, and a watchdog
+thread in each test kernel dumps the scheduler state if a test stalls.
+
+```bash
+make test             # all of the above on virt, virt-el2 and raspi3b
+make test-os-virt     # one suite on one machine
+make clippy doc       # what CI checks besides the tests
+```
+
+## Layout
+
+```text
+src/            preemptive-threads, the core crate (no_std library)
+  arch/         boot.rs (EL drop, MMU, SMP entry), vectors.rs (EL1 and EL0 traps),
+                user.rs (run_user, fault decoding), context.rs, mmu.rs (tables, ASIDs), timer.rs
+  platform/     rpi.rs + bcm2836.rs (Pi), virt.rs + gic.rs + psci.rs (QEMU virt), pl011.rs
+  sched/        scheduler, per-core state, run queues, sleep queue
+  sync/         spinlocks, wait queues, Mutex, Semaphore, Condvar, channel
+  mem/          heap, stack pool, frame allocator
+examples/       test_kernel.rs (thread tests), rpi_kernel.rs (threading demo)
+os/             pt-os, the kernel binary
+  src/          process.rs, syscall.rs, mm.rs (VMAs, user copies), elf.rs, vfs.rs,
+                initrd.rs, console.rs, main.rs (boot: initrd, console, sh)
+  examples/     os_test.rs (OS tests)
+  build.rs      packs user/bin and user/rootfs into the cpio initrd
+user/           programs that run at EL0
+  ulib/         user library
+  bin/          the userland: sh, ls, cat, top, mandel, ...
+  tests/        programs used by the OS tests
+  rootfs/       /etc/motd and /tmp
+scripts/        qemu-run.sh, shell-session.py, cast2gif.py
+docs/           ARCHITECTURE.md, demo.gif
+```
+
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) explains the boot path, the
+context layout, interrupts, the scheduler, address spaces, EL0 and EL1
+transitions, the path of a system call, the file system, the console and
+the process lifecycle.
+
+## Using the core crate
+
+`preemptive-threads` works without pt-os, as a threading library for
+bare-metal AArch64. An application provides one function and gets threads
+that are preempted by the timer and spread across all four cores:
 
 ```rust
 #![no_std]
@@ -33,202 +169,9 @@ fn main() {
 }
 ```
 
-## Status
-
-| What | Status |
-|------|--------|
-| QEMU `virt`, entered at EL1 (PSCI over HVC) | all 16 tests pass, 4 cores, in CI |
-| QEMU `virt,virtualization=on`, entered at EL2 (EL2 to EL1 drop, PSCI over SMC) | all 16 tests pass, 4 cores, in CI |
-| QEMU `raspi3b`, flat `kernel8.img` released through the spin-table stub at EL2, like the Pi firmware | all 16 tests pass, 4 cores, in CI |
-| Real Raspberry Pi Zero 2 W | **not yet verified on hardware.** The image builds and the boot path mirrors the firmware's (EL2 entry, spin table, ARM-local interrupt controller, PL011 on GPIO14/15). See [Running on a real Pi](#running-on-a-real-pi-zero-2-w) |
-
-## In progress: pt-os, a tiny multicore OS
-
-The repository is growing into a tiny multicore OS (`pt-os`). Already working
-on all three QEMU machines, with tests in CI (`make test-os`, `make
-test-shell`):
-
-- user programs run at EL0 in their own address spaces (per-process page
-  tables, 8-bit ASIDs, kernel mapped EL1-only and never executable from
-  EL0), loaded by a static ELF64 loader with W^X;
-- 26 system calls (`svc #0`): processes (`spawn` with fd mappings, `wait`,
-  `kill`, `procinfo`, ...), files (`open`, `read`, `write`, `readdir`,
-  `pipe`, `dup2`, ...) and the console;
-- a writable in-memory file system unpacked from a cpio initrd built from
-  the user programs, per-process fd tables, pipes;
-- console input from the PL011 receive interrupt through a line discipline
-  (echo, backspace, Ctrl-C kills the foreground job, Ctrl-D);
-- a user library (`ulib`: `println!`, a heap over `sbrk`, files) and a
-  userland: `sh` with pipelines, redirects and background jobs, `ls`, `cat`,
-  `echo`, `wc`, `grep`, `ps`, `top`, `primes`, `mandel` (4 worker processes),
-  `stress`, `crash`. A faulting process is killed with `[pid N] segfault`
-  and everything else keeps running.
-
-Try it with `make run-os-virt` (or `make run-os-raspi3b`): a shell on your
-terminal, Ctrl-A X quits QEMU. Not yet tried on a real Pi. The workspace has
-the core crate (this one: scheduler, sync, arch and EL0 support), `os/`
-(the `pt-os` kernel) and `user/` (`ulib`, the userland in `bin/`, the
-kernel-test programs in `tests/`). See
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#6-user-processes-pt-os).
-
-## Features
-
-- **Preemption on all four cores.** Each core's generic timer ticks at
-  1 kHz (configurable). Round-robin time slices (10 ticks by default) or
-  FIFO within a priority band.
-- **Scheduler.** Per-core run queues with four priority bands (idle, low,
-  normal, high; strict priority between bands), work stealing by idle
-  cores, reschedule IPIs (GIC SGIs on `virt`, ARM-local mailboxes on the
-  Pi) so a higher-priority thread made ready on another core runs
-  immediately, CPU affinity, per-core idle threads.
-- **One context-switch path.** Yield, block, exit and IRQ preemption all go
-  through the same switch routine. IRQ entry saves x0-x30, ELR, SPSR,
-  FPCR/FPSR and all 32 SIMD registers; the switch frame saves the
-  callee-saved x19-x30, d8-d15, FPCR/FPSR and DAIF. See
-  [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
-- **Blocking synchronisation.** `Mutex` with priority inheritance and
-  direct hand-off, `Semaphore`, `Condvar`, bounded MPMC `channel`, wait
-  queues, `thread::sleep` on a deadline queue, and `JoinHandle::join`
-  returning the thread's value.
-- **Memory.** A real heap (`linked_list_allocator` over a 64 MiB
-  linker-reserved region, IRQ-safe) installed as the global allocator,
-  pooled thread stacks with overflow canaries, finished threads reclaimed
-  automatically.
-- **Hardware bring-up.** EL3/EL2 to EL1 drop (sets HCR_EL2, CNTHCTL_EL2,
-  CNTVOFF_EL2, CPTR_EL2, VPIDR/VMPIDR_EL2, SCTLR_EL1). Identity-mapped MMU
-  with caches on every core, which is what makes atomics (load/store
-  exclusive) work on the BCM2837. GICv2 or BCM2836 ARM-local interrupt
-  controller, PSCI `CPU_ON` or spin-table release, PL011 UART at 115200
-  baud (IBRD 26 / FBRD 3 at the Pi's 48 MHz UART clock).
-- **Crash reports.** Unexpected exceptions print ESR/ELR/FAR/SPSR with a
-  decoded exception class and all registers, then halt; panics print the
-  message and stop the other cores.
-
-## Quick start
-
-Requirements: Rust 1.88 or newer with the `aarch64-unknown-none` target and
-`llvm-tools`, plus QEMU 8 or newer.
-
-```bash
-rustup target add aarch64-unknown-none
-rustup component add llvm-tools
-brew install qemu            # or: sudo apt install qemu-system-arm
-
-make test                    # thread and OS test kernels on virt, virt-el2 and raspi3b
-make test-virt               # thread tests, just one machine
-make test-os-virt            # user-process tests, just one machine
-make run-os-virt             # pt-os on QEMU virt (Ctrl-A X to quit)
-make run-raspi3b             # demo kernel on QEMU raspi3b (Ctrl-C to quit)
-make kernel8.img             # demo image for a real Pi
-```
-
-The test kernel (`examples/test_kernel.rs`) exits QEMU through semihosting,
-so the exit status is the verdict. Hangs are killed by a watchdog in
-`scripts/qemu-run.sh`, and a watchdog thread inside the kernel dumps the
-scheduler state if a single test stalls. Output on `raspi3b`:
-
-```text
-preemptive-threads test kernel (Raspberry Pi (BCM2837), entered at EL2)
-[TEST] smp_boot ... ok (4 cores online; 0 ms)
-[TEST] join_returns_value ... ok (16 joins, sum=1240; 1 ms)
-[TEST] preemption ... ok (cpu1 preemptions +1; 12 ms)
-[TEST] all_threads_complete ... ok (64/64 threads completed; 1 ms)
-[TEST] mutex_no_lost_updates ... ok (8 threads x 5000 increments = 40000; 146 ms)
-[TEST] channel_ordering ... ok (3000 messages in per-producer order; 7 ms)
-[TEST] channel_disconnect ... ok (disconnect reported on both ends; 6 ms)
-[TEST] sleep_accuracy ... ok (5ms->5949us 20ms->21176us 50ms->50333us order [10, 20, 30, 40]; 119 ms)
-[TEST] all_cores_ran_threads ... ok (cores used mask=0b1111; 65 ms)
-[TEST] priority_inheritance ... ok (L boosted 32->224 while H waited; 30 ms)
-[TEST] priority_bands ... ok (HIGH preempted NORMAL after 96 us; 5 ms)
-[TEST] fifo_policy ... ok (order [0, 1, 10, 11, 20, 21]; 80 ms)
-[TEST] semaphore_limits_concurrency ... ok (max concurrent holders 2; 0 ms)
-[TEST] condvar_producer_consumer ... ok (2000 items, sum 1999000; 4 ms)
-[TEST] fpu_state_preserved ... ok (11013 FP rounds bit-exact across preemptions; 85 ms)
-[TEST] threads_reaped ... ok (450 spawn/join cycles, live=1 stacks_in_use=1 heap 2165072B -> 2165072B; 22 ms)
-[STATS] cpus=4 switches=53704 preemptions=38 steals=36441 spawned=582 reaped=581 heap_used=2165072B
-ALL 16 TESTS PASSED on 4 cores
-```
-
-| Test | What it proves |
-|------|----------------|
-| `smp_boot` | all four cores came online |
-| `join_returns_value` | `join()` returns the closure's value (integers and heap types) |
-| `preemption` | two non-yielding threads pinned to one core both make progress |
-| `all_threads_complete` | 64 threads across two priority bands all finish |
-| `mutex_no_lost_updates` | 8 threads x 5000 read-modify-writes under preemption lose nothing |
-| `channel_ordering` / `channel_disconnect` | per-producer FIFO order through a bounded channel; disconnect is reported |
-| `sleep_accuracy` | sleeps last at least the requested time (and less than +40 ms); sleepers wake in deadline order |
-| `all_cores_ran_threads` | unpinned threads run on all four cores |
-| `priority_inheritance` | a low-priority mutex owner is boosted past a CPU-hogging medium thread so the high-priority waiter gets the lock |
-| `priority_bands` | a high-priority thread preempts a running normal one via IPI without waiting for a time slice |
-| `fifo_policy` | under FIFO, equal-priority threads run to completion in arrival order |
-| `semaphore_limits_concurrency` | a 2-permit semaphore never admits a third thread |
-| `condvar_producer_consumer` | 2000 items pass through a `Mutex` + `Condvar` queue in order |
-| `fpu_state_preserved` | floating-point results stay bit-exact across preemptions |
-| `threads_reaped` | 450 spawn/join cycles leak no threads, stacks or heap |
-
-## Running on a real Pi Zero 2 W
-
-What you need: a Pi Zero 2 W, a micro-SD card, and (optionally, but needed
-to see output) a 3.3 V USB-to-serial adapter.
-
-1. Build the image:
-
-   ```bash
-   make kernel8.img
-   ```
-
-2. Format the SD card with one FAT32 partition. From the official firmware
-   repository (<https://github.com/raspberrypi/firmware>, `boot/` folder),
-   copy `bootcode.bin`, `start.elf` and `fixup.dat` to it, plus your
-   `kernel8.img`.
-
-3. Create `config.txt` on the card:
-
-   ```ini
-   arm_64bit=1
-   kernel=kernel8.img
-   enable_uart=1
-   init_uart_clock=48000000
-   dtoverlay=disable-bt
-   ```
-
-   The firmware then starts the kernel at EL2 at 0x80000 and parks cores
-   1-3 on the spin table, exactly as `make test-raspi3b` emulates.
-
-4. Wire the serial adapter: adapter RX to GPIO14 (pin 8), adapter TX to
-   GPIO15 (pin 10), GND to GND (pin 6). Do not connect the adapter's 5 V
-   or 3.3 V pin.
-
-5. Open the console at 115200 8N1 (`screen /dev/tty.usbserial-* 115200` on
-   macOS, `screen /dev/ttyUSB0 115200` on Linux) and power the Pi.
-
-You should see the banner with `entered at EL2`, `[main] 4 cores online`, then
-worker lines every two seconds with `cores used so far 0b....` and a
-`[monitor]` line every second whose switch and preemption counters keep
-growing. Even without a serial cable, the green ACT LED blinks at 2 Hz once
-the scheduler is running.
-
-If nothing happens:
-
-- LED never blinks and nothing on serial: check the card is FAT32, the file
-  is called `kernel8.img`, and `arm_64bit=1` is set.
-- Garbage on serial: the UART clock is not 48 MHz. Keep
-  `init_uart_clock=48000000` in `config.txt`.
-- Fewer than 4 cores online: the firmware did not use the spin table.
-  Make sure there is no `armstub=` line in `config.txt`.
-
-## Configuration
-
-```rust
-pt::start(
-    Config { policy: SchedPolicy::RoundRobin, tick_hz: 1000, time_slice_ticks: 10, cpus: 4 },
-    main,
-);
-```
-
-Threads take a name, priority (0-255, higher runs first), stack size and CPU
-affinity through `thread::Builder`. Cargo features:
+`Config` sets the policy (`RoundRobin` or `Fifo`), tick rate, time slice
+and core count. `thread::Builder` sets a thread's name, priority (0-255),
+stack size and CPU affinity. Cargo features:
 
 | feature | effect |
 |---------|--------|
@@ -238,40 +181,66 @@ affinity through `thread::Builder`. Cargo features:
 
 The crate's build script links its examples with `rpi0w2.ld` (or
 `qemu_virt.ld`). A kernel in another crate needs `-C link-arg=-T<script>`
-with one of those scripts.
+with one of those scripts, as `os/build.rs` does. `make run-raspi3b` runs
+the threading demo (`examples/rpi_kernel.rs`).
+
+## Running on a real Pi Zero 2 W
+
+Not yet verified on the board itself. Everything below works the same on
+QEMU `raspi3b`, which boots the image the way the firmware does.
+
+You need a Pi Zero 2 W, a micro-SD card and a 3.3 V USB-to-serial adapter
+(the shell lives on the serial port).
+
+1. Build the image: `make build/pt-os-kernel8.img`. It is built without
+   semihosting, which would trap on real hardware. `make kernel8.img`
+   builds the threading demo instead.
+2. Format the SD card as FAT32. Copy `bootcode.bin`, `start.elf` and
+   `fixup.dat` from the `boot/` folder of
+   <https://github.com/raspberrypi/firmware>, and the image as
+   `kernel8.img`.
+3. Create `config.txt` on the card:
+
+   ```ini
+   arm_64bit=1
+   kernel=kernel8.img
+   kernel_address=0x80000
+   enable_uart=1
+   init_uart_clock=48000000
+   dtoverlay=disable-bt
+   ```
+
+   The firmware then starts the kernel at EL2 at 0x80000 (where the linker
+   script puts it) and parks cores 1-3 on the spin table, as `make
+   test-raspi3b` emulates.
+4. Wire the adapter: adapter RX to GPIO14 (pin 8), adapter TX to GPIO15
+   (pin 10), GND to GND (pin 6). Do not connect its 5 V or 3.3 V pin.
+5. Open the console at 115200 8N1 (`screen /dev/tty.usbserial-* 115200` on
+   macOS, `screen /dev/ttyUSB0 115200` on Linux) and power the Pi. The
+   banner should say `entered at EL2`, followed by the motd and the
+   `pt-os>` prompt.
+
+If nothing happens: check that RX and TX are not swapped, that the card is
+FAT32 with the files at its root, and that `arm_64bit=1` is set. Garbage on
+the serial line means the UART clock is not 48 MHz (keep
+`init_uart_clock=48000000`). Fewer than 4 cores means the firmware did not
+use the spin table (there must be no `armstub=` line).
 
 ## Limitations
 
-- Kernel threads run at EL1 in one identity-mapped address space, with no
-  memory protection between them. User processes (`os/`) are isolated.
-- A panic in any thread stops the whole system (`panic = "abort"`).
-- Priority inheritance is one level deep: it is not propagated along chains
-  of mutexes. Boosts are exact when nested mutexes unlock in reverse order.
-- The timer ticks periodically (1 kHz by default), so sleeps have tick
-  granularity. It is not tickless.
-- Drivers cover only what the scheduler needs: timer, interrupt controller,
-  UART transmit and the ACT LED in the demo. There is no GPU, USB, SD or
-  network support.
-- At most 4 cores. The heap is a fixed 64 MiB region set in the linker
-  scripts.
-
-## Layout
-
-```text
-src/
-  arch/        boot.rs (EL drop, MMU, SMP entry), vectors.rs (trap frames, crash dumps),
-               context.rs (switch), mmu.rs, timer.rs, semihosting.rs
-  platform/    rpi.rs + bcm2836.rs (ARM-local IRQs, spin table), virt.rs + gic.rs + psci.rs, pl011.rs
-  sched/       mod.rs (switch logic, wake, PI hooks, ticks), percpu.rs, runqueue.rs, sleep.rs
-  sync/        spin.rs, waitqueue.rs, mutex.rs, semaphore.rs, condvar.rs, channel.rs
-  mem/         heap.rs, stack.rs
-  thread.rs    spawn / Builder / JoinHandle / sleep / yield
-  kernel.rs    start(), boot entry points, IRQ dispatch, stats
-examples/
-  test_kernel.rs   self-checking test suite (make test-*)
-  rpi_kernel.rs    demo kernel (make kernel8.img)
-docs/ARCHITECTURE.md
-```
+- Processes are single-threaded and created with `spawn` (no `fork`).
+  Programs are static ELF64 binaries. There are no signals beyond kill and
+  Ctrl-C, and no `mmap`.
+- The file system lives in RAM and is lost on reboot. There is no SD
+  card, USB, network or GPU driver.
+- At most 255 live processes (one 8-bit ASID each, no generation
+  rollover).
+- Kernel threads share one EL1 address space. A panic or fault in the
+  kernel stops the whole system (`panic = "abort"`).
+- Priority inheritance is one level deep. The timer ticks periodically,
+  so sleeps have tick granularity.
+- At most 4 cores. The kernel heap is a fixed 64 MiB region set in the
+  linker scripts.
 
 ## License
 
