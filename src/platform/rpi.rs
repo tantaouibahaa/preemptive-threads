@@ -2,6 +2,7 @@
 
 use super::{bcm2836, pl011::Pl011, Irq};
 use crate::arch;
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 /// Human-readable board name.
 pub const NAME: &str = "Raspberry Pi (BCM2837)";
@@ -124,15 +125,27 @@ pub fn early_init(_boot_el: u8) {
     }
 }
 
-/// Global interrupt controller setup (nothing to do for the local block).
-pub fn irq_init_global() {}
+/// Global interrupt controller setup: disable every peripheral and
+/// ARM-local source the firmware may have left on; only what the kernel
+/// handles is enabled afterwards.
+pub fn irq_init_global() {
+    bcm2836::init_global();
+}
 
 /// Per-core interrupt routing.
 pub fn irq_init_cpu(cpu: usize) {
     bcm2836::init_cpu(cpu);
 }
 
+/// BCM2835 sources disabled by [`dispatch_irqs`] because they fired
+/// without being enabled.
+static SILENCED_BASIC: AtomicU32 = AtomicU32::new(0);
+static SILENCED_IRQS: AtomicU64 = AtomicU64::new(0);
+
 /// Handle every pending interrupt source of the calling core.
+///
+/// A source the kernel did not enable is disabled on the spot and reported
+/// as [`Irq::Other`] (counted by the kernel), so it cannot storm.
 pub fn dispatch_irqs(mut handler: impl FnMut(Irq)) {
     let cpu = arch::cpu_id();
     let src = bcm2836::pending(cpu);
@@ -146,12 +159,24 @@ pub fn dispatch_irqs(mut handler: impl FnMut(Irq)) {
     if src & bcm2836::GPU_IRQ != 0 {
         // Peripheral interrupts go through the BCM2835 controller; only the
         // PL011 is enabled there.
-        if bcm2836::gpu_pending(bcm2836::GPU_IRQ_UART) {
+        let (basic, irqs) = bcm2836::gpu_pending_all();
+        let uart = 1u64 << bcm2836::GPU_IRQ_UART;
+        if irqs & uart != 0 {
             handler(Irq::Uart);
+        }
+        // Report each stray source once, in case the pending registers
+        // also show sources that are already disabled.
+        let basic = basic & !SILENCED_BASIC.fetch_or(basic, Ordering::Relaxed);
+        let stray = irqs & !uart;
+        let stray = stray & !SILENCED_IRQS.fetch_or(stray, Ordering::Relaxed);
+        if basic != 0 || stray != 0 {
+            bcm2836::disable_gpu_irqs(basic, stray);
+            handler(Irq::Other(bcm2836::GPU_IRQ));
         }
     }
     let other = src & !(bcm2836::MBOX0 | bcm2836::CNTPNSIRQ | bcm2836::GPU_IRQ);
     if other != 0 {
+        bcm2836::silence_local(cpu, other);
         handler(Irq::Other(other));
     }
 }

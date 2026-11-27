@@ -103,16 +103,23 @@ fn main() {
             }
         }
     }
+    // Every interrupt source the kernel did not enable must stay quiet.
+    let stray = pt::stray_irqs();
+    if stray != 0 {
+        failed += 1;
+        println!("[CHECK] no stray interrupts ... FAILED: {} stray IRQs", stray);
+    }
     let s = pt::stats();
     println!(
-        "[STATS] cpus={} switches={} preemptions={} steals={} spawned={} reaped={} heap_used={}B",
+        "[STATS] cpus={} switches={} preemptions={} steals={} spawned={} reaped={} heap_used={}B stray_irqs={}",
         s.cpus_online(),
         s.context_switches(),
         s.preemptions(),
         s.cpus.iter().map(|c| c.steals).sum::<u64>(),
         s.threads_spawned,
         s.threads_reaped,
-        s.heap.used
+        s.heap.used,
+        stray
     );
     for (i, c) in s.cpus.iter().enumerate().filter(|(_, c)| c.online) {
         println!(

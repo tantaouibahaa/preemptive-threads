@@ -64,7 +64,7 @@ pub mod thread;
 pub mod time;
 
 pub use errors::SpawnError;
-pub use kernel::{boot_el, start, stats, Config, CpuStats, KernelStats};
+pub use kernel::{boot_el, start, stats, stray_irqs, Config, CpuStats, KernelStats};
 pub use sched::{priority, SchedPolicy, ThreadId, ThreadState};
 pub use thread::{current_cpu, current_thread_id, sleep, spawn, yield_now, Builder, JoinHandle, Thread};
 pub use time::{Duration, Instant};

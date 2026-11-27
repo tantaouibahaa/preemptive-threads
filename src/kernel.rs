@@ -6,7 +6,7 @@ use crate::platform::{self, Irq, MAX_CPUS};
 use crate::sched::percpu::{self, this_cpu, PERCPU};
 use crate::sched::{self, SchedPolicy};
 use crate::thread::Builder;
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 
 /// Kernel configuration passed to [`start`].
 #[derive(Debug, Clone, Copy)]
@@ -32,6 +32,13 @@ static BOOT_EL: AtomicU8 = AtomicU8::new(0);
 static STARTED: AtomicBool = AtomicBool::new(false);
 static PANICKED: AtomicBool = AtomicBool::new(false);
 static CONFIGURED_CPUS: AtomicUsize = AtomicUsize::new(1);
+static STRAY_IRQS: AtomicU64 = AtomicU64::new(0);
+
+/// Interrupts from sources the kernel never enabled (each one is disabled
+/// by the board code when it first fires). Should stay 0.
+pub fn stray_irqs() -> u64 {
+    STRAY_IRQS.load(Ordering::Relaxed)
+}
 
 /// Primary-core Rust entry, called from `_start` with the exception level
 /// the image was entered at.
@@ -113,7 +120,9 @@ pub(crate) extern "C" fn irq_dispatch() {
             cpu.need_resched.store(true, Ordering::Relaxed);
         }
         Irq::Uart => crate::console::uart_irq(),
-        Irq::Other(_) => {}
+        Irq::Other(_) => {
+            STRAY_IRQS.fetch_add(1, Ordering::Relaxed);
+        }
     });
     if PANICKED.load(Ordering::Relaxed) {
         arch::halt();

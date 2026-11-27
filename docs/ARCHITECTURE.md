@@ -142,7 +142,11 @@ the TCB.
                                               SPI 33 = PL011, routed to core 0)
       Pi:   read COREn_IRQ_SOURCE            (bit 1 = CNTPNSIRQ, bit 4 = mailbox 0,
                                               bit 8 = GPU interrupt: BCM2835 IRQ 57 = PL011,
-                                              routed to core 0 by GPU_INT_ROUTING)
+                                              routed to core 0 by GPU_INT_ROUTING;
+                                              at boot every other BCM2835 and local
+                                              source is disabled, and one that fires
+                                              anyway is disabled and counted:
+                                              stray_irqs())
       timer:  re-arm CNTP_CVAL (next tick), wake expired sleepers,
               charge the time slice, maybe set need_resched
       resched IPI: set need_resched

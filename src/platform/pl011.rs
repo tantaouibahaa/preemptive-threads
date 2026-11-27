@@ -86,10 +86,15 @@ impl Pl011 {
     }
 
     /// Clear the receive interrupts (after draining the FIFO with
-    /// [`getc`](Self::getc)).
+    /// [`getc`](Self::getc)). The clear has reached the UART (its IRQ line
+    /// is down) when this returns, so the interrupt does not fire again
+    /// right after `eret`.
     pub fn ack_rx(&self) {
         // SAFETY: MMIO accesses to the UART owned by this driver.
-        unsafe { write_volatile(self.reg(ICR), RX_IRQS) };
+        unsafe {
+            write_volatile(self.reg(ICR), RX_IRQS);
+            core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+        }
     }
 
     /// Write a string, translating `\n` to `\r\n`.
