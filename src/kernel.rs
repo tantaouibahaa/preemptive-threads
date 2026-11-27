@@ -46,8 +46,10 @@ pub(crate) extern "C" fn boot_primary(boot_el: u64) -> ! {
     BOOT_EL.store(boot_el as u8, Ordering::Relaxed);
     percpu::init_this_cpu(0);
     platform::early_init(boot_el as u8);
+    print_cpu_breadcrumb(boot_el as u8);
     crate::mem::heap::init();
     crate::mem::frame::init();
+    platform::print_boot_info();
     platform::irq_init_global();
     platform::irq_init_cpu(0);
     sched::init_idle_thread(&PERCPU[0]);
@@ -64,11 +66,32 @@ pub(crate) extern "C" fn boot_primary(boot_el: u64) -> ! {
 pub(crate) extern "C" fn boot_secondary(cpu: u64) -> ! {
     let cpu = cpu as usize;
     percpu::init_this_cpu(cpu);
+    crate::println!("[boot] cpu{} online", cpu);
     platform::irq_init_cpu(cpu);
     sched::init_idle_thread(&PERCPU[cpu]);
     PERCPU[cpu].online.store(true, Ordering::Release);
     sched::start_tick();
     sched::idle_loop()
+}
+
+/// First boot breadcrumb, right after the console is up: if a board stops
+/// later, the last `[boot]` line says how far it got.
+fn print_cpu_breadcrumb(boot_el: u8) {
+    let (midr, sctlr): (u64, u64);
+    // SAFETY: reading ID and control registers has no side effects.
+    unsafe {
+        core::arch::asm!("mrs {}, midr_el1", "mrs {}, sctlr_el1", out(reg) midr, out(reg) sctlr,
+                         options(nomem, nostack, preserves_flags));
+    }
+    crate::println!();
+    crate::println!(
+        "[boot] cpu0: entered at EL{}, now EL{}, MIDR {:#x}, CNTFRQ {} Hz, SCTLR_EL1 {:#x}: mmu on",
+        boot_el,
+        arch::current_el(),
+        midr,
+        arch::timer::frequency(),
+        sctlr
+    );
 }
 
 /// Exception level the kernel image was entered at (3, 2 or 1).
