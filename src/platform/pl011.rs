@@ -1,4 +1,4 @@
-//! PL011 UART driver (transmit only).
+//! PL011 UART driver: polled transmit, interrupt-driven receive.
 
 use core::ptr::{read_volatile, write_volatile};
 
@@ -8,8 +8,14 @@ const IBRD: usize = 0x24;
 const FBRD: usize = 0x28;
 const LCRH: usize = 0x2c;
 const CR: usize = 0x30;
+const IMSC: usize = 0x38;
 const ICR: usize = 0x44;
 const FR_TXFF: u32 = 1 << 5;
+const FR_RXFE: u32 = 1 << 4;
+/// Receive and receive-timeout interrupts: the first fires when the RX FIFO
+/// reaches its trigger level, the second when bytes have sat in it for 32
+/// bit periods, so single keystrokes are delivered right away.
+const RX_IRQS: u32 = (1 << 4) | (1 << 6);
 const FR_BUSY: u32 = 1 << 3;
 
 /// A PL011 at a fixed MMIO base address.
@@ -55,6 +61,35 @@ impl Pl011 {
             }
             write_volatile(self.reg(DR), b as u32);
         }
+    }
+
+    /// Read one received byte, if any.
+    pub fn getc(&self) -> Option<u8> {
+        // SAFETY: MMIO accesses to the UART owned by this driver.
+        unsafe {
+            if read_volatile(self.reg(FR)) & FR_RXFE != 0 {
+                None
+            } else {
+                Some(read_volatile(self.reg(DR)) as u8)
+            }
+        }
+    }
+
+    /// Raise the UART's interrupt line when bytes arrive.
+    pub fn enable_rx_irq(&self) {
+        // SAFETY: MMIO accesses to the UART owned by this driver.
+        unsafe {
+            write_volatile(self.reg(ICR), RX_IRQS);
+            let m = read_volatile(self.reg(IMSC));
+            write_volatile(self.reg(IMSC), m | RX_IRQS);
+        }
+    }
+
+    /// Clear the receive interrupts (after draining the FIFO with
+    /// [`getc`](Self::getc)).
+    pub fn ack_rx(&self) {
+        // SAFETY: MMIO accesses to the UART owned by this driver.
+        unsafe { write_volatile(self.reg(ICR), RX_IRQS) };
     }
 
     /// Write a string, translating `\n` to `\r\n`.

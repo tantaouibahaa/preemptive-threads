@@ -67,12 +67,19 @@ pub fn dispatch_irqs(mut handler: impl FnMut(Irq)) {
         match id {
             gic::TIMER_INTID => handler(Irq::Timer),
             gic::RESCHED_SGI => handler(Irq::Reschedule),
+            gic::UART_INTID => handler(Irq::Uart),
             other => handler(Irq::Other(other)),
         }
         // Thread switches happen only after dispatch (in irq_exit), so the
         // interrupt is always completed on the core that acknowledged it.
         gic::eoi(iar);
     }
+}
+
+/// Deliver the console UART's interrupt to core 0 (see [`Irq::Uart`]).
+pub fn enable_uart_irq() {
+    UART.enable_rx_irq();
+    gic::enable_spi(gic::UART_INTID, 0);
 }
 
 /// Ask `cpu` to run its scheduler.

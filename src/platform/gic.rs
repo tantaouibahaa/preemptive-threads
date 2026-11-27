@@ -16,6 +16,7 @@ const GICD_ISENABLER: usize = 0x100;
 const GICD_ICENABLER: usize = 0x180;
 const GICD_ICPENDR: usize = 0x280;
 const GICD_IPRIORITYR: usize = 0x400;
+const GICD_ITARGETSR: usize = 0x800;
 const GICD_SGIR: usize = 0xf00;
 
 const GICC_CTLR: usize = 0x000;
@@ -26,6 +27,8 @@ const GICC_EOIR: usize = 0x010;
 
 /// INTID of the EL1 non-secure physical timer.
 pub const TIMER_INTID: u32 = 30;
+/// INTID of the PL011 UART0 on QEMU `virt` (SPI 1).
+pub const UART_INTID: u32 = 33;
 /// SGI used for reschedule IPIs.
 pub const RESCHED_SGI: u32 = 1;
 const SPURIOUS: u32 = 1023;
@@ -49,6 +52,17 @@ pub fn init_distributor() {
         wr(GICD + GICD_ICPENDR + (i as usize / 32) * 4, u32::MAX);
     }
     wr(GICD + GICD_CTLR, 1);
+}
+
+/// Enable shared peripheral interrupt `intid`, routed to core `cpu`.
+pub fn enable_spi(intid: u32, cpu: usize) {
+    let i = intid as usize;
+    let shift = (i % 4) * 8;
+    let prio = GICD + GICD_IPRIORITYR + (i / 4) * 4;
+    wr(prio, (rd(prio) & !(0xff << shift)) | (0x80 << shift));
+    let tgt = GICD + GICD_ITARGETSR + (i / 4) * 4;
+    wr(tgt, (rd(tgt) & !(0xff << shift)) | ((1u32 << cpu) << shift));
+    wr(GICD + GICD_ISENABLER + (i / 32) * 4, 1 << (i % 32));
 }
 
 /// Enable the timer PPI and SGIs for the calling core and its CPU interface.

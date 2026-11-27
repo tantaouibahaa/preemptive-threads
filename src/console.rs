@@ -2,12 +2,34 @@
 //!
 //! Output is serialised with an IRQ-safe spinlock so lines printed from
 //! different cores do not interleave.
+//!
+//! Input is interrupt driven: [`set_rx_handler`] installs a function that
+//! is called in IRQ context (on core 0) for every received byte.
 
 use crate::platform::UART;
 use crate::sync::spin::IrqSpinLock;
 use core::fmt::{self, Write};
 
 static LOCK: IrqSpinLock<()> = IrqSpinLock::new(());
+static RX_HANDLER: IrqSpinLock<Option<fn(u8)>> = IrqSpinLock::new(None);
+
+/// Call `handler` for every byte the console UART receives, from now on.
+/// It runs in IRQ context: it must not block and should be short.
+pub fn set_rx_handler(handler: fn(u8)) {
+    *RX_HANDLER.lock() = Some(handler);
+    crate::platform::enable_uart_irq();
+}
+
+/// UART interrupt: drain the receive FIFO into the handler.
+pub(crate) fn uart_irq() {
+    let h = *RX_HANDLER.lock();
+    while let Some(b) = UART.getc() {
+        if let Some(h) = h {
+            h(b);
+        }
+    }
+    UART.ack_rx();
+}
 
 struct Raw;
 

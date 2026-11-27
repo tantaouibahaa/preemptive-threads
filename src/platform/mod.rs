@@ -37,6 +37,9 @@ pub enum Irq {
     Timer,
     /// Another core asked this one to reschedule.
     Reschedule,
+    /// The console UART received data (enabled with `enable_uart_irq`,
+    /// delivered to core 0).
+    Uart,
     /// Some other interrupt (id is controller specific).
     Other(u32),
 }

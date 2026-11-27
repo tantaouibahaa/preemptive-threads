@@ -96,10 +96,24 @@ pub fn dispatch_irqs(mut handler: impl FnMut(Irq)) {
     if src & bcm2836::CNTPNSIRQ != 0 {
         handler(Irq::Timer);
     }
-    let other = src & !(bcm2836::MBOX0 | bcm2836::CNTPNSIRQ);
+    if src & bcm2836::GPU_IRQ != 0 {
+        // Peripheral interrupts go through the BCM2835 controller; only the
+        // PL011 is enabled there.
+        if bcm2836::gpu_pending(bcm2836::GPU_IRQ_UART) {
+            handler(Irq::Uart);
+        }
+    }
+    let other = src & !(bcm2836::MBOX0 | bcm2836::CNTPNSIRQ | bcm2836::GPU_IRQ);
     if other != 0 {
         handler(Irq::Other(other));
     }
+}
+
+/// Deliver the console UART's interrupt (BCM2835 IRQ 57) to core 0 (see
+/// [`Irq::Uart`]).
+pub fn enable_uart_irq() {
+    UART.enable_rx_irq();
+    bcm2836::enable_gpu_irq(bcm2836::GPU_IRQ_UART, 0);
 }
 
 /// Ask `cpu` to run its scheduler.

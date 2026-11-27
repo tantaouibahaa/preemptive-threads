@@ -112,6 +112,7 @@ pub(crate) extern "C" fn irq_dispatch() {
             cpu.ipis.fetch_add(1, Ordering::Relaxed);
             cpu.need_resched.store(true, Ordering::Relaxed);
         }
+        Irq::Uart => crate::console::uart_irq(),
         Irq::Other(_) => {}
     });
     if PANICKED.load(Ordering::Relaxed) {
