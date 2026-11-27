@@ -2,8 +2,10 @@
 //!
 //! Every core goes through the same steps before running Rust code:
 //!
-//! 1. Drop from EL3 or EL2 to EL1h (with CNTHCTL_EL2, CNTVOFF_EL2,
-//!    VPIDR/VMPIDR_EL2, CPTR_EL2 and SCTLR_EL1 set to sane values).
+//! 1. Drop from EL3 or EL2 to EL1h, writing every EL2 control register it
+//!    relies on in full (SCTLR_EL2, HCR_EL2, CNTHCTL_EL2, CNTVOFF_EL2,
+//!    MDCR_EL2, CPTR_EL2, HSTR_EL2, VPIDR/VMPIDR_EL2, SCTLR_EL1): their
+//!    reset values are UNKNOWN on hardware.
 //! 2. Pick its boot stack: `__boot_stacks_top - cpu * BOOT_STACK_SIZE`.
 //! 3. Enable FP/SIMD, the MMU (identity map, caches on) and install VBAR_EL1.
 //!
@@ -99,22 +101,35 @@ __pt_el_to_el1:
     b.eq    5f
     b.hi    4f
     ret
-4:  // EL3 -> EL2 (non-secure, AArch64 EL2, HVC enabled)
+4:  // EL3 -> EL2 (non-secure, AArch64 EL2, HVC enabled). Only QEMU's
+    // raspi3b ELF boot gets here; the Pi firmware's armstub already did it.
     ldr     x9, =0x5b1
     msr     scr_el3, x9
     msr     cptr_el3, xzr
+    msr     mdcr_el3, xzr           // no debug/PMU traps to EL3
+    ldr     x9, ={sctlr_el2}
+    msr     sctlr_el2, x9           // EL2 runs with its MMU and caches off
     mov     x9, #0x3c9
     msr     spsr_el3, x9
     adr     x9, 5f
     msr     elr_el3, x9
     eret
-5:  // EL2 -> EL1
+5:  // EL2 -> EL1. Every register is written in full: on real hardware
+    // most of their reset values are UNKNOWN (QEMU zeroes them).
+    ldr     x9, ={sctlr_el2}
+    msr     sctlr_el2, x9
+    isb
     mov     x9, #(1 << 31)          // HCR_EL2.RW: EL1 is AArch64, no traps
     msr     hcr_el2, x9
-    mrs     x9, cnthctl_el2
-    orr     x9, x9, #3              // EL1PCTEN | EL1PCEN: EL1 may use the physical timer
-    msr     cnthctl_el2, x9
+    mov     x9, #3                  // CNTHCTL_EL2: EL1PCTEN | EL1PCEN (EL1 owns the
+    msr     cnthctl_el2, x9         // physical timer), event stream off
     msr     cntvoff_el2, xzr
+    msr     cnthp_ctl_el2, xzr      // EL2 timer off
+    // MDCR_EL2: no debug or PMU traps, every PMU counter visible to EL1
+    // (HPMN = PMCR_EL0.N), EL2 counting off.
+    mrs     x9, pmcr_el0
+    ubfx    x9, x9, #11, #5
+    msr     mdcr_el2, x9
     mov     x9, #0x33ff             // CPTR_EL2: do not trap FP/SIMD
     msr     cptr_el2, x9
     msr     hstr_el2, xzr
@@ -133,6 +148,12 @@ __pt_el_to_el1:
 __pt_cpu_setup:
     mov     x9, #(3 << 20)
     msr     cpacr_el1, x9
+    // UNKNOWN at reset on hardware: no software step or debug exceptions,
+    // no EL0 PMU access, both EL1 timers off until the scheduler arms one.
+    msr     mdscr_el1, xzr
+    msr     pmuserenr_el0, xzr
+    msr     cntp_ctl_el0, xzr
+    msr     cntv_ctl_el0, xzr
     // CNTKCTL_EL1: EL0 may read the counters (EL0PCTEN, EL0VCTEN) but not
     // touch the timers, so user code cannot disturb the scheduler tick.
     mov     x9, #3
@@ -169,7 +190,12 @@ __pt_cpu_setup:
     tcr = const super::mmu::TCR,
     sctlr_on = const super::mmu::SCTLR_MMU_ON,
     sctlr_off = const super::mmu::SCTLR_MMU_OFF,
+    sctlr_el2 = const SCTLR_EL2_OFF,
 );
+
+/// SCTLR_EL2 while the boot code runs at EL2: the ARMv8.0 RES1 bits only
+/// (MMU, caches and alignment checks off, little endian).
+const SCTLR_EL2_OFF: u64 = 0x30C5_0830;
 
 extern "C" {
     /// Entry point for secondary cores (physical address, identity mapped).

@@ -18,16 +18,20 @@ process lifecycle.
        │                            │   │ or by the spin table (Pi)
        ▼                            ▼   │
   __pt_el_to_el1  ◄─────────────────────┘
-       │   EL3: SCR_EL3 (NS, RW, HCE), CPTR_EL3 = 0, eret to EL2
-       │   EL2: HCR_EL2.RW, CNTHCTL_EL2 |= EL1PCEN|EL1PCTEN, CNTVOFF_EL2 = 0,
-       │        CPTR_EL2 (no FP trap), HSTR_EL2 = 0, VPIDR/VMPIDR_EL2,
-       │        SCTLR_EL1 = RES1 (MMU off), eret to EL1h with DAIF masked
+       │   EL3: SCR_EL3 (NS, RW, HCE), CPTR_EL3 = MDCR_EL3 = 0, eret to EL2
+       │   EL2: every register written in full (hardware reset values are
+       │        UNKNOWN): SCTLR_EL2 = RES1, HCR_EL2.RW,
+       │        CNTHCTL_EL2 = EL1PCEN|EL1PCTEN, CNTVOFF_EL2 = 0, EL2 timer off,
+       │        MDCR_EL2 = HPMN only (no traps), CPTR_EL2 (no FP trap),
+       │        HSTR_EL2 = 0, VPIDR/VMPIDR_EL2, SCTLR_EL1 = RES1 (MMU off),
+       │        eret to EL1h with DAIF masked
        ▼
   stack = __boot_stacks_top - cpu * 64 KiB
        │
   core 0 only: BOOT_L1[0] = &BOOT_L2 | table
        ▼
-  __pt_cpu_setup: CPACR_EL1.FPEN, MAIR/TCR/TTBR0, TLB + I-cache invalidate,
+  __pt_cpu_setup: CPACR_EL1.FPEN, MDSCR_EL1 = PMUSERENR_EL0 = 0, EL1 timers off,
+                  MAIR/TCR/TTBR0, TLB + I-cache invalidate,
                   SCTLR_EL1 = M | C | I, VBAR_EL1
        │
   core 0: clear .bss ─► boot_primary(boot_el)      cores 1-3: boot_secondary(cpu)
