@@ -42,7 +42,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.88
         with:
           targets: aarch64-unknown-none
-      - name: Build library, examples, user programs and pt-os
+      - name: Build library, examples, user programs and pt-os (with its initrd)
         run: |
           cargo build --release --examples
           cargo build --release --examples --features qemu-virt,semihosting
@@ -71,13 +71,16 @@ jobs:
           qemu-system-aarch64 --version
       - name: Run thread test kernel
         run: make test-${{ matrix.machine }}
-      - name: Run OS test kernel (user processes)
+      - name: Run OS test kernel (processes, VFS, pipes, console, shell)
         run: make test-os-${{ matrix.machine }}
+      - name: Run a shell session typed into the serial port
+        run: make test-shell-${{ matrix.machine }}
       - name: Test logs
         if: always()
         run: |
           cat build/test-${{ matrix.machine }}.log || true
           cat build/os-test-${{ matrix.machine }}.log || true
+          cat build/shell-${{ matrix.machine }}.log || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -85,3 +88,4 @@ jobs:
           path: |
             build/test-${{ matrix.machine }}.log
             build/os-test-${{ matrix.machine }}.log
+            build/shell-${{ matrix.machine }}.log

@@ -16,9 +16,9 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use preemptive_threads::arch::user::FaultKind;
 use preemptive_threads::{self as pt, println, thread, Builder, Config, Duration, Instant};
-use pt_os::console;
+use pt_os::console::{self, STATUS_INTERRUPTED};
 use pt_os::process::{self, STATUS_KILLED};
-use pt_os::vfs;
+use pt_os::vfs::{self, FdTable, File};
 use pt_os::{initrd, Errno, Image, Output, Pid, SpawnOptions};
 
 type TestResult = Result<String, String>;
@@ -76,6 +76,14 @@ fn main() {
         ("procs_32_across_cores", procs_32_across_cores),
         ("elf_rejected", elf_rejected),
         ("asid_exhaustion", asid_exhaustion),
+        ("vfs_files_and_dirs", vfs_files_and_dirs),
+        ("fd_inheritance", fd_inheritance),
+        ("pipe_eof_and_epipe", pipe_eof_and_epipe),
+        ("read_interrupted_by_kill", read_interrupted_by_kill),
+        ("procinfo", procinfo),
+        ("console_line_discipline", console_line_discipline),
+        ("ctrl_c_kills_foreground", ctrl_c_kills_foreground),
+        ("shell_session", shell_session),
         ("resources_back_to_baseline", resources_back_to_baseline),
     ];
     *BASELINE.lock() = Some(pt_os::stats());
@@ -379,6 +387,273 @@ fn asid_exhaustion() -> TestResult {
     let (_, status, _) = run("hello", &[])?;
     ensure!(status == 0, "hello after exhaustion exited with {}", status);
     Ok(format!("{} live processes, then EAGAIN; killed and reaped all in {} ms; ASIDs reusable", pids.len(), reaped.as_millis()))
+}
+
+fn vfs_files_and_dirs() -> TestResult {
+    let (_, status, out) = run("fstest", &["vfs"])?;
+    ensure!(status == 0, "fstest vfs failed check {} (output {:?})", status, out);
+    // Kernel-side view of the same tree.
+    let motd = vfs::read_file("/etc/motd").map_err(|e| format!("/etc/motd: {:?}", e))?;
+    ensure!(motd.windows(5).any(|w| w == b"pt-os"), "motd {:?}", String::from_utf8_lossy(&motd));
+    ensure!(vfs::lookup("/tmp/t1").is_err(), "fstest left /tmp/t1 behind");
+    Ok(String::from(out.trim_end()))
+}
+
+fn fd_inheritance() -> TestResult {
+    let (_, status, out) = run("fstest", &["inherit"])?;
+    ensure!(status == 0, "fstest inherit failed check {} (output {:?})", status, out);
+    Ok(String::from(out.trim_end()))
+}
+
+fn pipe_eof_and_epipe() -> TestResult {
+    let (_, status, out) = run("pipetest", &[])?;
+    ensure!(status == 0, "pipetest failed check {} (output {:?})", status, out);
+    Ok(String::from(out.lines().last().unwrap_or("").trim_end()))
+}
+
+/// Wait until process `pid` is blocked (in the kernel).
+fn wait_blocked(pid: Pid) -> Result<(), String> {
+    let p = process::find(pid).ok_or("process vanished")?;
+    let t = Instant::now();
+    while p.state() != b'S' {
+        ensure!(t.elapsed() < Duration::from_secs(5), "pid {} never blocked (state {})", pid, p.state() as char);
+        thread::sleep(Duration::from_millis(2));
+    }
+    // Give it a moment to really be asleep in the wait queue.
+    thread::sleep(Duration::from_millis(10));
+    ensure!(p.state() == b'S', "pid {} woke up by itself", pid);
+    Ok(())
+}
+
+/// Kill `pid` (blocked in the kernel) and check it goes away quickly.
+fn kill_blocked(pid: Pid, what: &str) -> Result<u64, String> {
+    wait_blocked(pid)?;
+    let t = Instant::now();
+    pt_os::kill(pid).map_err(|e| format!("{:?}", e))?;
+    let s = wait(pid)?;
+    let us = t.elapsed().as_micros() as u64;
+    ensure!(s == STATUS_KILLED, "{}: status {}", what, s);
+    ensure!(us < 200_000, "{}: kill took {} us", what, us);
+    Ok(us)
+}
+
+fn read_interrupted_by_kill() -> TestResult {
+    // A kernel thread blocked in a pipe read gets EINTR when interrupted.
+    let (r, w) = vfs::pipe();
+    let reader = Builder::new()
+        .name("pipe-reader")
+        .spawn(move || {
+            let mut b = [0u8; 8];
+            r.read(&mut b)
+        })
+        .map_err(|e| format!("{:?}", e))?;
+    let t = Instant::now();
+    while reader.thread().state() != pt::ThreadState::Blocked {
+        ensure!(t.elapsed() < Duration::from_secs(2), "reader never blocked");
+        thread::sleep(Duration::from_millis(1));
+    }
+    reader.thread().interrupt();
+    let r = reader.join();
+    ensure!(r == Err(Errno::EINTR), "interrupted pipe read returned {:?}", r);
+    // Processes blocked in console read, pipe read, pipe write and sleep
+    // die at once when killed.
+    let console_cat = spawn_with("cat", &[], SpawnOptions { files: Some(FdTable::console()), ..Default::default() })?;
+    let t_console = kill_blocked(console_cat, "cat on the console")?;
+    let (r2, w2) = vfs::pipe();
+    let mut fds = FdTable::new();
+    fds.set(0, r2).map_err(|e| format!("{:?}", e))?;
+    fds.set(1, File::console()).map_err(|e| format!("{:?}", e))?;
+    let pipe_cat = spawn_with("cat", &[], SpawnOptions { files: Some(fds), ..Default::default() })?;
+    let t_pipe = kill_blocked(pipe_cat, "cat on a pipe")?;
+    let (r3, w3) = vfs::pipe();
+    let mut fds = FdTable::new();
+    fds.set(1, w3).map_err(|e| format!("{:?}", e))?;
+    let blocker = spawn_with("pipetest", &["block"], SpawnOptions { files: Some(fds), ..Default::default() })?;
+    let t_write = kill_blocked(blocker, "writer on a full pipe")?;
+    ensure!(r3.available() == Ok(vfs::PIPE_CAPACITY), "pipe not full: {:?}", r3.available());
+    let sleeper = spawn_with("sleep", &["100"], SpawnOptions::default())?;
+    let t_sleep = kill_blocked(sleeper, "sleep 100")?;
+    drop((w, w2, r3));
+    Ok(format!(
+        "kernel pipe read -> EINTR; killed while blocked: console read {} us, pipe read {} us, pipe write {} us, sleep {} us",
+        t_console, t_pipe, t_write, t_sleep
+    ))
+}
+
+fn procinfo() -> TestResult {
+    const CPU: usize = 3;
+    let spin = spawn_with("spin", &["3000"], SpawnOptions { cpu: Some(CPU), ..Default::default() })?;
+    let secret = spawn_with("secret", &["quiet"], SpawnOptions::default())?;
+    wait_blocked(secret)?;
+    thread::sleep(Duration::from_millis(30));
+    let (ps_pid, status, out) = run("ps", &[])?;
+    ensure!(status == 0, "ps exited {}", status);
+    let row = |pid: Pid| -> Option<Vec<String>> {
+        out.lines()
+            .map(|l| l.split_whitespace().map(String::from).collect::<Vec<_>>())
+            .find(|f| f.first().map(|s| s.as_str()) == Some(format!("{}", pid).as_str()))
+    };
+    let sr = row(spin).ok_or_else(|| format!("spin missing from {:?}", out))?;
+    ensure!((sr[3] == "R" || sr[3] == "Q") && sr[4] == "3" && sr.last().map(|s| s.as_str()) == Some("spin"), "spin row {:?}", sr);
+    let cr = row(secret).ok_or_else(|| format!("secret missing from {:?}", out))?;
+    ensure!(cr[3] == "S", "secret row {:?}", cr);
+    let pr = row(ps_pid).ok_or_else(|| format!("ps missing from {:?}", out))?;
+    ensure!(pr[3] == "R", "ps row {:?}", pr);
+    let sp = process::find(spin).ok_or("spin vanished")?;
+    let cpu_ms = sp.cpu_time().as_millis();
+    ensure!(cpu_ms >= 20, "spin used only {} ms of CPU", cpu_ms);
+    pt_os::kill(spin).map_err(|e| format!("{:?}", e))?;
+    pt_os::kill(secret).map_err(|e| format!("{:?}", e))?;
+    wait(spin)?;
+    wait(secret)?;
+    Ok(format!("ps: spin R on cpu3 ({} ms CPU), secret S, ps R", cpu_ms))
+}
+
+fn wait_captured(out: &Output, needle: &str) -> Result<String, String> {
+    wait_for_output(out, needle)
+}
+
+fn console_line_discipline() -> TestResult {
+    console::flush_input();
+    console::capture_start();
+    let out = Output::capture();
+    let mut fds = FdTable::new();
+    fds.set(0, File::console()).map_err(|e| format!("{:?}", e))?;
+    fds.set(1, out.file()).map_err(|e| format!("{:?}", e))?;
+    let cat = spawn_with("cat", &[], SpawnOptions { files: Some(fds), ..Default::default() })?;
+    console::inject(b"hellx\x7fo w\x08\x08 world\r\n");
+    wait_captured(&out, "hello world\n")?;
+    console::inject(b"partial\x04");
+    wait_captured(&out, "hello world\npartial")?;
+    console::inject(b"junk\x15line\n");
+    wait_captured(&out, "partialline\n")?;
+    console::inject(b"\x04");
+    let s = wait(cat)?;
+    let echo = console::capture_stop();
+    ensure!(s == 0, "cat exited {}", s);
+    let got = String::from_utf8_lossy(&out.captured()).into_owned();
+    ensure!(got == "hello world\npartialline\n", "cat read {:?}", got);
+    let echo = String::from_utf8_lossy(&echo).into_owned();
+    ensure!(echo.contains("hellx\x08 \x08o w\x08 \x08"), "echo {:?}", echo);
+    Ok(String::from("backspace/DEL, CR LF, Ctrl-D flush and EOF, Ctrl-U; echoed"))
+}
+
+fn ctrl_c_kills_foreground() -> TestResult {
+    console::flush_input();
+    let spin = spawn_with("spin", &["60000"], SpawnOptions { pgid: Some(0), ..Default::default() })?;
+    console::set_foreground(spin);
+    thread::sleep(Duration::from_millis(30));
+    let t = Instant::now();
+    console::inject(b"\x03");
+    let s = wait(spin)?;
+    let us = t.elapsed().as_micros();
+    console::set_foreground(0);
+    ensure!(s == STATUS_INTERRUPTED, "spin status {}", s);
+    // With no foreground job, Ctrl-C abandons the line and hands the
+    // reader an empty one.
+    let out = Output::capture();
+    let mut fds = FdTable::new();
+    fds.set(0, File::console()).map_err(|e| format!("{:?}", e))?;
+    fds.set(1, out.file()).map_err(|e| format!("{:?}", e))?;
+    let cat = spawn_with("cat", &[], SpawnOptions { files: Some(fds), ..Default::default() })?;
+    console::inject(b"abandoned\x03");
+    wait_captured(&out, "\n")?;
+    console::inject(b"\x04");
+    ensure!(wait(cat)? == 0, "cat did not exit");
+    let got = String::from_utf8_lossy(&out.captured()).into_owned();
+    ensure!(got == "\n", "cat read {:?}", got);
+    Ok(format!("foreground spin interrupted (status -2) in {} us; no foreground: line abandoned", us))
+}
+
+struct Typist {
+    mark: usize,
+}
+
+impl Typist {
+    fn prompts(text: &str) -> usize {
+        text.matches("pt-os> ").count()
+    }
+
+    /// Type `line` + Enter and return the output up to the next prompt.
+    fn command(&mut self, line: &str) -> Result<String, String> {
+        let before = Self::prompts(&String::from_utf8_lossy(&console::captured()));
+        let mut bytes = Vec::from(line.as_bytes());
+        bytes.push(b'\r');
+        console::inject(&bytes);
+        let t = Instant::now();
+        loop {
+            let text = String::from_utf8_lossy(&console::captured()).into_owned();
+            if Self::prompts(&text) > before {
+                let end = text.rfind("pt-os> ").unwrap_or(text.len());
+                let out = String::from(&text[self.mark.min(end)..end]);
+                self.mark = end + "pt-os> ".len();
+                return Ok(out);
+            }
+            ensure!(t.elapsed() < Duration::from_secs(20), "no prompt after {:?}; output {:?}", line, &text[self.mark.min(text.len())..]);
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+}
+
+fn shell_session() -> TestResult {
+    console::flush_input();
+    console::capture_start();
+    let sh = spawn_with("/bin/sh", &[], SpawnOptions { files: Some(FdTable::console()), ..Default::default() })?;
+    let t = Instant::now();
+    while !String::from_utf8_lossy(&console::captured()).contains("pt-os> ") {
+        ensure!(t.elapsed() < Duration::from_secs(5), "no prompt from sh");
+        thread::sleep(Duration::from_millis(5));
+    }
+    let mut ty = Typist { mark: "pt-os> ".len() };
+    let expect = |out: &str, needle: &str, what: &str| -> Result<(), String> {
+        ensure!(out.contains(needle), "{}: {:?} not in {:?}", what, needle, out);
+        Ok(())
+    };
+    let out = ty.command("echo hi | wc")?;
+    expect(&out, "      1       1       3\n", "echo hi | wc")?;
+    let out = ty.command("ls /bin")?;
+    for p in ["cat", "mandel", "primes", "sh", "top", "wc"] {
+        expect(&out, p, "ls /bin")?;
+    }
+    let bg = ty.command("primes 100000 &")?;
+    ensure!(bg.contains("] started on cpu"), "primes &: {:?}", bg);
+    let out = ty.command("wait")?;
+    let all = String::from(&bg) + &out;
+    expect(&all, "primes below 100000: 9592", "wait")?;
+    expect(&all, "done (exited 0)", "wait")?;
+    ty.command("cat /etc/motd > /tmp/x")?;
+    let out = ty.command("cat /tmp/x")?;
+    expect(&out, "welcome to pt-os", "cat /tmp/x")?;
+    let out = ty.command("cat /tmp/x | grep pt-os | wc")?;
+    expect(&out, "      1 ", "3-stage pipeline")?;
+    let out = ty.command("crash")?;
+    expect(&out, "] segfault\n", "crash")?;
+    let out = ty.command("echo 'still  alive'")?;
+    expect(&out, "still  alive\n", "after crash")?;
+    // Ctrl-C a running job: the shell survives.
+    let before = Typist::prompts(&String::from_utf8_lossy(&console::captured()));
+    console::inject(b"spin 60000\r");
+    thread::sleep(Duration::from_millis(300));
+    console::inject(b"\x03");
+    let t = Instant::now();
+    loop {
+        let text = String::from_utf8_lossy(&console::captured()).into_owned();
+        if Typist::prompts(&text) > before {
+            let seg = &text[ty.mark.min(text.len())..];
+            ensure!(seg.contains("^C\n") && seg.contains("] interrupted\n"), "Ctrl-C output {:?}", seg);
+            ty.mark = text.rfind("pt-os> ").unwrap_or(0) + "pt-os> ".len();
+            break;
+        }
+        ensure!(t.elapsed() < Duration::from_secs(5), "no prompt after Ctrl-C");
+        thread::sleep(Duration::from_millis(5));
+    }
+    let out = ty.command("echo back")?;
+    expect(&out, "back\n", "after Ctrl-C")?;
+    console::inject(b"rm /tmp/x\rexit 3\r");
+    let s = wait(sh)?;
+    console::capture_stop();
+    ensure!(s == 3, "sh exit status {}", s);
+    Ok(String::from("echo|wc, ls, primes & + wait, > and cat, 3-stage pipe, crash, Ctrl-C, exit 3"))
 }
 
 fn resources_back_to_baseline() -> TestResult {

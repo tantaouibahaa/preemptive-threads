@@ -1,15 +1,18 @@
 # preemptive-threads: build, run and test targets.
 #
 #   make                 user programs -> initrd -> pt-os kernel (and the examples)
-#   make test            thread tests and OS tests on every emulated machine
+#   make test            thread tests, OS tests and shell sessions on every emulated machine
 #   make test-threads    the thread test kernel (examples/test_kernel.rs) on every machine
 #   make test-os         the OS test kernel (os/examples/os_test.rs) on every machine
+#   make test-shell      a scripted shell session typed into pt-os's serial port on every machine
 #   make test-virt       QEMU virt, entered at EL1 (PSCI over HVC)
 #   make test-virt-el2   QEMU virt with virtualization=on (EL2 -> EL1 drop, PSCI over SMC)
 #   make test-raspi3b    QEMU raspi3b booting a flat image through the spin-table stub at EL2
 #   make test-os-<machine>  the OS test kernel on one machine
+#   make test-shell-<machine>  the shell session on one machine
 #   make user            build the EL0 programs packed into pt-os's initrd
-#   make run-os-virt     run the pt-os kernel on QEMU virt
+#   make run-os-virt     interactive pt-os shell on QEMU virt (Ctrl-A X quits)
+#   make run-os-raspi3b  interactive pt-os shell on QEMU raspi3b (Ctrl-A X quits)
 #   make kernel8.img     demo kernel image for a Raspberry Pi Zero 2 W SD card
 #   make run-raspi3b     run the demo on QEMU raspi3b (Ctrl-C to quit)
 #   make run-virt        run the demo on QEMU virt
@@ -27,10 +30,14 @@ RPI_OUT      := $(RPI_DIR)/$(TARGET)/release/examples
 VIRT_OUT     := $(VIRT_DIR)/$(TARGET)/release/examples
 USER_DIR     := target/user
 PASS_MARKER  := ALL [0-9]+ TESTS PASSED on 4 cores
+SHELL_PASS   := SHELL SESSION PASSED
+# Interactive serial console: Ctrl-C goes to the guest, Ctrl-A X quits QEMU.
+CONSOLE      := -chardev stdio,id=con,mux=on,signal=off -serial chardev:con -mon chardev=con,mode=readline
 OS_PASS      := ALL [0-9]+ OS TESTS PASSED on 4 cores
 
 .PHONY: all build user test test-threads test-os test-virt test-virt-el2 test-raspi3b \
-        test-os-virt test-os-virt-el2 test-os-raspi3b run-raspi3b run-virt run-os-virt run-os-raspi3b \
+        test-os-virt test-os-virt-el2 test-os-raspi3b test-shell test-shell-virt test-shell-virt-el2 \
+        test-shell-raspi3b run-raspi3b run-virt run-os-virt run-os-raspi3b \
         clippy doc clean build/test-virt.elf build/test-raspi3b.img kernel8.img build/demo-virt.elf \
         build/os-test-virt.elf build/os-test-raspi3b.img build/pt-os-virt.elf build/pt-os-kernel8.img
 
@@ -99,7 +106,23 @@ test-os-raspi3b: build/os-test-raspi3b.img
 
 test-os: test-os-virt test-os-virt-el2 test-os-raspi3b
 
-test: test-threads test-os
+# --- shell sessions (real PL011 receive path) -------------------------------
+
+test-shell-virt: build/pt-os-virt.elf
+	scripts/shell-session.py virt $< $(TIMEOUT) build/shell-virt.log
+	grep -q "$(SHELL_PASS)" build/shell-virt.log
+
+test-shell-virt-el2: build/pt-os-virt.elf
+	scripts/shell-session.py virt-el2 $< $(TIMEOUT) build/shell-virt-el2.log
+	grep -q "$(SHELL_PASS)" build/shell-virt-el2.log
+
+test-shell-raspi3b: build/pt-os-kernel8.img
+	scripts/shell-session.py raspi3b $< $(TIMEOUT) build/shell-raspi3b.log
+	grep -q "$(SHELL_PASS)" build/shell-raspi3b.log
+
+test-shell: test-shell-virt test-shell-virt-el2 test-shell-raspi3b
+
+test: test-threads test-os test-shell
 
 # --- demo kernel ----------------------------------------------------------
 
@@ -132,10 +155,10 @@ build/pt-os-kernel8.img: user
 	$(OBJCOPY) -O binary $(RPI_DIR)/$(TARGET)/release/pt-os $@
 
 run-os-virt: build/pt-os-virt.elf
-	qemu-system-aarch64 -M virt,gic-version=2 -cpu cortex-a53 -smp 4 -m 512M -display none -serial stdio -kernel $<
+	qemu-system-aarch64 -M virt,gic-version=2 -cpu cortex-a53 -smp 4 -m 512M -display none $(CONSOLE) -kernel $<
 
 run-os-raspi3b: build/pt-os-kernel8.img
-	qemu-system-aarch64 -M raspi3b -display none -serial stdio -kernel $<
+	qemu-system-aarch64 -M raspi3b -display none $(CONSOLE) -kernel $<
 
 # --- lint / docs ----------------------------------------------------------
 
