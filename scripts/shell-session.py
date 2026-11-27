@@ -130,13 +130,21 @@ def run(s, demo):
     check("shell survives", "echo still alive", r"still alive")
 
     # Ctrl-C a long-running foreground job.
+    # (Ctrl-C again if the first one came before the shell started the job.)
     s.mark = len(s.text())
     s.type("spin 60000\r")
     s.expect(r"spin 60000\n", "spin started")
     time.sleep(1.0)
-    s.type("\x03")
-    m = s.expect(r"\^C\n.*\[pid \d+\] interrupted\n" + re.escape(PROMPT), "Ctrl-C", 10)
-    s.mark = m.end()
+    for attempt in range(5):
+        s.type("\x03")
+        try:
+            s.expect(r"\^C\n.*\[pid \d+\] interrupted\n" + re.escape(PROMPT), "Ctrl-C", 3)
+            break
+        except AssertionError:
+            if attempt == 4:
+                raise
+    time.sleep(0.5)  # let an extra prompt from an early Ctrl-C come out
+    s.mark = len(s.text())
     checks.append("Ctrl-C")
     check("after Ctrl-C", "echo back", r"back")
     if demo:

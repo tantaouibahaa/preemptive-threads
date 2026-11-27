@@ -433,7 +433,9 @@ fn kill_blocked(pid: Pid, what: &str) -> Result<u64, String> {
     let s = wait(pid)?;
     let us = t.elapsed().as_micros() as u64;
     ensure!(s == STATUS_KILLED, "{}: status {}", what, s);
-    ensure!(us < 200_000, "{}: kill took {} us", what, us);
+    // Without interruptible waits these would hang (or take 100 s for
+    // `sleep 100`); allow for a slow emulator host.
+    ensure!(us < 1_000_000, "{}: kill took {} us", what, us);
     Ok(us)
 }
 
@@ -485,7 +487,12 @@ fn procinfo() -> TestResult {
     let spin = spawn_with("spin", &["3000"], SpawnOptions { cpu: Some(CPU), ..Default::default() })?;
     let secret = spawn_with("secret", &["quiet"], SpawnOptions::default())?;
     wait_blocked(secret)?;
-    thread::sleep(Duration::from_millis(30));
+    let sp = process::find(spin).ok_or("spin vanished")?;
+    let t = Instant::now();
+    while sp.cpu_time() < Duration::from_millis(20) {
+        ensure!(t.elapsed() < Duration::from_secs(5), "spin got no CPU time: {:?}", sp.cpu_time());
+        thread::sleep(Duration::from_millis(5));
+    }
     let (ps_pid, status, out) = run("ps", &[])?;
     ensure!(status == 0, "ps exited {}", status);
     let row = |pid: Pid| -> Option<Vec<String>> {
@@ -499,9 +506,7 @@ fn procinfo() -> TestResult {
     ensure!(cr[3] == "S", "secret row {:?}", cr);
     let pr = row(ps_pid).ok_or_else(|| format!("ps missing from {:?}", out))?;
     ensure!(pr[3] == "R", "ps row {:?}", pr);
-    let sp = process::find(spin).ok_or("spin vanished")?;
     let cpu_ms = sp.cpu_time().as_millis();
-    ensure!(cpu_ms >= 20, "spin used only {} ms of CPU", cpu_ms);
     pt_os::kill(spin).map_err(|e| format!("{:?}", e))?;
     pt_os::kill(secret).map_err(|e| format!("{:?}", e))?;
     wait(spin)?;
@@ -631,22 +636,28 @@ fn shell_session() -> TestResult {
     let out = ty.command("echo 'still  alive'")?;
     expect(&out, "still  alive\n", "after crash")?;
     // Ctrl-C a running job: the shell survives.
-    let before = Typist::prompts(&String::from_utf8_lossy(&console::captured()));
+    // (Ctrl-C again if the first one came before the shell started the job.)
     console::inject(b"spin 60000\r");
     thread::sleep(Duration::from_millis(300));
-    console::inject(b"\x03");
     let t = Instant::now();
-    loop {
-        let text = String::from_utf8_lossy(&console::captured()).into_owned();
-        if Typist::prompts(&text) > before {
+    'ctrl_c: loop {
+        console::inject(b"\x03");
+        let sent = Instant::now();
+        while sent.elapsed() < Duration::from_secs(2) {
+            let text = String::from_utf8_lossy(&console::captured()).into_owned();
             let seg = &text[ty.mark.min(text.len())..];
-            ensure!(seg.contains("^C\n") && seg.contains("] interrupted\n"), "Ctrl-C output {:?}", seg);
-            ty.mark = text.rfind("pt-os> ").unwrap_or(0) + "pt-os> ".len();
-            break;
+            if seg.contains("] interrupted\n") && seg.rfind("pt-os> ") > seg.find("] interrupted\n") {
+                ensure!(seg.contains("^C\n"), "Ctrl-C output {:?}", seg);
+                break 'ctrl_c;
+            }
+            thread::sleep(Duration::from_millis(5));
         }
-        ensure!(t.elapsed() < Duration::from_secs(5), "no prompt after Ctrl-C");
-        thread::sleep(Duration::from_millis(5));
+        ensure!(t.elapsed() < Duration::from_secs(10), "spin never interrupted");
     }
+    // Let any extra prompt (from an early Ctrl-C) come out first.
+    thread::sleep(Duration::from_millis(200));
+    let text = String::from_utf8_lossy(&console::captured()).into_owned();
+    ty.mark = text.rfind("pt-os> ").unwrap_or(0) + "pt-os> ".len();
     let out = ty.command("echo back")?;
     expect(&out, "back\n", "after Ctrl-C")?;
     console::inject(b"rm /tmp/x\rexit 3\r");

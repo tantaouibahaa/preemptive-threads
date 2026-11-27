@@ -83,7 +83,12 @@ fn main(args: Args) -> i32 {
     check!(18, w.is_ok());
     ulib::close(p[1] as u64);
     check!(19, ulib::read(p[0] as u64, &mut buf) == 16);
-    ulib::sleep_ms(20);
+    // The writer refills the pipe and blocks again.
+    let mut tries = 0;
+    while ulib::input_available(p[0] as u64) < 4096 && tries < 250 {
+        ulib::sleep_ms(20);
+        tries += 1;
+    }
     check!(20, ulib::input_available(p[0] as u64) == 4096);
     check!(21, ulib::close(p[0] as u64) == 0);
     check!(22, ulib::wait_pid(w.unwrap()) == Ok(0));
