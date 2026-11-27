@@ -101,7 +101,9 @@ pub struct Process {
     pub(crate) files: Mutex<FdTable>,
     pub(crate) cwd: Mutex<String>,
     status: IrqSpinLock<Option<i32>>,
-    killed: AtomicBool,
+    /// Exit status `kill` asked for; 0 = not killed (kill statuses are
+    /// negative). One atomic, so whoever sees the process killed also sees
+    /// the status it was killed with.
     kill_status: AtomicI32,
     detached: AtomicBool,
     thread: IrqSpinLock<Option<Thread>>,
@@ -136,7 +138,7 @@ impl Process {
 
     /// Whether `kill` was called on it.
     pub fn killed(&self) -> bool {
-        self.killed.load(Ordering::SeqCst)
+        self.kill_status.load(Ordering::SeqCst) != 0
     }
 
     /// The fault that killed it, if any.
@@ -295,8 +297,7 @@ pub fn spawn(image: Image<'_>, argv: &[&[u8]], opts: SpawnOptions) -> Result<Pid
         files: Mutex::new(files),
         cwd: Mutex::new(cwd),
         status: IrqSpinLock::new(None),
-        killed: AtomicBool::new(false),
-        kill_status: AtomicI32::new(STATUS_KILLED),
+        kill_status: AtomicI32::new(0),
         detached: AtomicBool::new(false),
         thread: IrqSpinLock::new(None),
         fault: IrqSpinLock::new(None),
@@ -343,7 +344,7 @@ fn process_main(p: Arc<Process>, mut frame: TrapFrame) {
     unsafe { sched::set_address_space(ttbr0) };
     let status = loop {
         if p.killed() {
-            break p.kill_status.load(Ordering::Acquire);
+            break p.kill_status.load(Ordering::SeqCst);
         }
         let (esr, far) = match run_user(&mut frame) {
             UserExit::Interrupted => continue,
@@ -460,8 +461,10 @@ pub fn kill(pid: Pid) -> Result<(), Errno> {
 /// `EINTR` at once.
 pub fn kill_with(pid: Pid, status: i32) -> Result<(), Errno> {
     let p = find(pid).ok_or(Errno::ESRCH)?;
-    if p.status().is_none() && !p.killed.swap(true, Ordering::SeqCst) {
-        p.kill_status.store(status, Ordering::Release);
+    debug_assert!(status < 0);
+    if p.status().is_none() {
+        // The first kill wins.
+        let _ = p.kill_status.compare_exchange(0, status, Ordering::SeqCst, Ordering::SeqCst);
     }
     fence(Ordering::SeqCst);
     if let Some(t) = p.thread() {
