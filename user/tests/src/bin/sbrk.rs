@@ -4,7 +4,7 @@
 #![no_std]
 #![no_main]
 
-use ut::{println, Args};
+use ulib::{println, Args};
 
 const SMALL: i64 = 10_000;
 const BIG: i64 = 1 << 20;
@@ -13,13 +13,14 @@ fn pattern(i: u64) -> u8 {
     (i.wrapping_mul(31) ^ (i >> 7)) as u8
 }
 
-#[no_mangle]
-fn ut_main(args: Args) -> i32 {
-    let base = ut::sbrk(0);
+ulib::entry!(main);
+
+fn main(args: Args) -> i32 {
+    let base = ulib::sbrk(0);
     if base <= 0 || base % 4096 != 0 {
         return 1;
     }
-    if ut::sbrk(SMALL) != base {
+    if ulib::sbrk(SMALL) != base {
         return 2;
     }
     let p = base as *mut u8;
@@ -29,10 +30,10 @@ fn ut_main(args: Args) -> i32 {
             p.add(i as usize).write_volatile(pattern(i));
         }
     }
-    if ut::sbrk(0) != base + SMALL {
+    if ulib::sbrk(0) != base + SMALL {
         return 3;
     }
-    if ut::sbrk(BIG) != base + SMALL {
+    if ulib::sbrk(BIG) != base + SMALL {
         return 4;
     }
     // SAFETY: the heap now extends to base + SMALL + BIG.
@@ -48,10 +49,10 @@ fn ut_main(args: Args) -> i32 {
             }
         }
     }
-    if ut::sbrk(-BIG) != base + SMALL + BIG || ut::sbrk(0) != base + SMALL {
+    if ulib::sbrk(-BIG) != base + SMALL + BIG || ulib::sbrk(0) != base + SMALL {
         return 6;
     }
-    if ut::sbrk(1 << 40) != -ut::errno::ENOMEM {
+    if ulib::sbrk(1 << 40) != -ulib::errno::ENOMEM {
         return 7;
     }
     println!("sbrk ok: heap at {:#x} grew to {} KiB and shrank back", base, (SMALL + BIG) / 1024);

@@ -3,13 +3,11 @@ name = "pt-user-tests"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.88"
-description = "Minimal EL0 test programs for the pt-os kernel (embedded into its test kernel)"
+description = "EL0 test programs for the pt-os test kernel (unpacked under /test)"
 license = "MIT"
 publish = false
 build = "build.rs"
+autobins = true
 
-[lib]
-name = "ut"
-path = "src/lib.rs"
-test = false
-doctest = false
+[dependencies]
+ulib = { path = "../ulib" }

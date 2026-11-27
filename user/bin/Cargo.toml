@@ -1,0 +1,12 @@
+[package]
+name = "pt-userland"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+description = "pt-os userland: sh, ls, cat, echo, wc, grep, ps, top, primes, mandel, ... (unpacked under /bin)"
+license = "MIT"
+publish = false
+build = "build.rs"
+
+[dependencies]
+ulib = { path = "../ulib" }

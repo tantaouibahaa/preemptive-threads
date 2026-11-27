@@ -3,13 +3,14 @@
 #![no_std]
 #![no_main]
 
-use ut::{println, Args};
+use ulib::{println, Args};
 
 pub const SECRET: u64 = 0x5ec2_e75e_c2e7_5ec2;
 
-#[no_mangle]
-fn ut_main(args: Args) -> i32 {
-    let heap = ut::sbrk(4096);
+ulib::entry!(main);
+
+fn main(args: Args) -> i32 {
+    let heap = ulib::sbrk(4096);
     if heap <= 0 {
         return 1;
     }
@@ -19,6 +20,6 @@ fn ut_main(args: Args) -> i32 {
         println!("secret: stored at {:#x}", heap);
     }
     loop {
-        ut::sleep_ns(1_000_000_000);
+        ulib::sleep_ns(1_000_000_000);
     }
 }

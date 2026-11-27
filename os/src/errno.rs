@@ -19,9 +19,18 @@ impl Errno {
     pub const EAGAIN: Errno = Errno(11);
     pub const ENOMEM: Errno = Errno(12);
     pub const EFAULT: Errno = Errno(14);
+    pub const EEXIST: Errno = Errno(17);
+    pub const ENOTDIR: Errno = Errno(20);
+    pub const EISDIR: Errno = Errno(21);
     pub const EINVAL: Errno = Errno(22);
+    pub const EMFILE: Errno = Errno(24);
+    pub const ENOTTY: Errno = Errno(25);
+    pub const EFBIG: Errno = Errno(27);
+    pub const EPIPE: Errno = Errno(32);
+    pub const ERANGE: Errno = Errno(34);
     pub const ENAMETOOLONG: Errno = Errno(36);
     pub const ENOSYS: Errno = Errno(38);
+    pub const ENOTEMPTY: Errno = Errno(39);
 }
 
 impl From<VmError> for Errno {

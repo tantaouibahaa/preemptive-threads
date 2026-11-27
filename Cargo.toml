@@ -43,12 +43,20 @@ name = "test_kernel"
 path = "examples/test_kernel.rs"
 
 # The core crate stays at the root (plain `cargo build` builds only it);
-# `os/` is the kernel binary with processes and system calls, `user/` the
-# programs that run at EL0.
+# `os/` is the kernel binary (processes, system calls, VFS, console);
+# `user/` the programs that run at EL0: `ulib` (the user library), `bin`
+# (the userland: sh, ls, cat, top, ...) and `tests` (kernel-test programs).
 [workspace]
-members = [".", "os", "user/tests"]
+members = [".", "os", "user/ulib", "user/bin", "user/tests"]
 
 # User programs are embedded into the kernel image: keep them small.
 [profile.release.package.pt-user-tests]
 debug = false
 strip = true
+
+[profile.release.package.pt-userland]
+debug = false
+strip = true
+
+[profile.release.package.ulib]
+debug = false

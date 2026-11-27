@@ -1,4 +1,5 @@
-//! Self-checking test kernel for user processes (M1/M2).
+//! Self-checking test kernel for pt-os: user processes (M1/M2), the file
+//! system, pipes, the console line discipline and the shell (M3/M4).
 //!
 //! Same protocol as the thread test kernel: one `[TEST] <name> ... ok` or
 //! `... FAILED: <reason>` line per test, then `ALL <n> OS TESTS PASSED on 4
@@ -15,8 +16,10 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use preemptive_threads::arch::user::FaultKind;
 use preemptive_threads::{self as pt, println, thread, Builder, Config, Duration, Instant};
+use pt_os::console;
 use pt_os::process::{self, STATUS_KILLED};
-use pt_os::{Errno, Image, Output, Pid, SpawnOptions};
+use pt_os::vfs;
+use pt_os::{initrd, Errno, Image, Output, Pid, SpawnOptions};
 
 type TestResult = Result<String, String>;
 type Test = (&'static str, fn() -> TestResult);
@@ -57,6 +60,9 @@ fn watchdog(names: Vec<&'static str>) {
 static BASELINE: pt::sync::IrqSpinLock<Option<pt_os::OsStats>> = pt::sync::IrqSpinLock::new(None);
 
 fn main() {
+    let files = initrd::mount().expect("initrd") + initrd::unpack(initrd::TEST_ARCHIVE).expect("test initrd");
+    println!("[pt-os] initrd: {} files", files);
+    console::init();
     let tests: &[Test] = &[
         ("el0_hello_exit_code", el0_hello_exit_code),
         ("syscalls_basic", syscalls_basic),
@@ -113,11 +119,22 @@ fn main() {
 
 // --- helpers ---------------------------------------------------------------
 
+/// Where a test program lives: `/test/<name>` for the kernel-test
+/// programs, `/bin/<name>` for the userland.
+fn path_of(name: &str) -> String {
+    let t = format!("/test/{}", name);
+    if name.contains('/') || vfs::lookup(&t).is_err() {
+        String::from(name)
+    } else {
+        t
+    }
+}
+
 fn spawn_with(name: &str, args: &[&str], opts: SpawnOptions) -> Result<Pid, String> {
     let mut argv: Vec<&[u8]> = Vec::new();
     argv.push(name.as_bytes());
     argv.extend(args.iter().map(|a| a.as_bytes()));
-    pt_os::spawn(Image::Named(name), &argv, opts).map_err(|e| format!("spawn {} {:?}: {:?}", name, args, e))
+    pt_os::spawn(Image::Named(&path_of(name)), &argv, opts).map_err(|e| format!("spawn {} {:?}: {:?}", name, args, e))
 }
 
 fn spawn(name: &str, args: &[&str]) -> Result<Pid, String> {
@@ -304,7 +321,8 @@ fn procs_32_across_cores() -> TestResult {
 }
 
 fn elf_rejected() -> TestResult {
-    let hello = pt_os::programs::find("hello").ok_or("no hello")?;
+    let hello = vfs::read_file("/bin/hello").map_err(|e| format!("no /bin/hello: {:?}", e))?;
+    let hello = &hello[..];
     let expect = |what: &str, img: &[u8], want: Errno| -> Result<(), String> {
         let r = pt_os::spawn(Image::Elf(img), &[b"x"], SpawnOptions::default());
         ensure!(r == Err(want), "{}: {:?} (expected {:?})", what, r, want);
@@ -341,7 +359,7 @@ fn asid_exhaustion() -> TestResult {
     let free = pt_os::stats().asids_free;
     let mut pids = Vec::new();
     let err = loop {
-        match pt_os::spawn(Image::Named("secret"), &[b"secret", b"quiet"], SpawnOptions::default()) {
+        match pt_os::spawn(Image::Named("/test/secret"), &[b"secret", b"quiet"], SpawnOptions::default()) {
             Ok(pid) => pids.push(pid),
             Err(e) => break e,
         }

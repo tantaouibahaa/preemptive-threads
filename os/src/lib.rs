@@ -1,4 +1,4 @@
-//! pt-os: user processes on top of the `preemptive-threads` kernel.
+//! pt-os: a tiny multicore OS on top of the `preemptive-threads` kernel.
 //!
 //! The core crate provides the mechanisms: EL0 entry and exit
 //! ([`preemptive_threads::arch::user`]), per-process translation tables with
@@ -11,7 +11,9 @@
 //! - [`process`]: the process table, `spawn`, `wait`, `kill` and the
 //!   per-process run loop;
 //! - [`syscall`]: the system call numbers and dispatcher;
-//! - [`programs`]: the user programs embedded into the kernel image.
+//! - [`vfs`]: the in-memory file system, open files, pipes and fd tables;
+//! - [`initrd`]: the embedded cpio archive unpacked into it at boot;
+//! - [`console`]: console output and the input line discipline.
 //!
 //! A process is one kernel thread plus an address space. The thread runs
 //! the user code with `run_user` and handles its system calls and faults in
@@ -23,12 +25,14 @@
 
 extern crate alloc;
 
+pub mod console;
 pub mod elf;
 pub mod errno;
+pub mod initrd;
 pub mod mm;
 pub mod process;
-pub mod programs;
 pub mod syscall;
+pub mod vfs;
 
 pub use errno::Errno;
 pub use process::{kill, spawn, wait, Image, Output, Pid, Process, SpawnOptions};

@@ -4,11 +4,12 @@
 #![no_std]
 #![no_main]
 
-use ut::{println, Args};
+use ulib::{println, Args};
 
-#[no_mangle]
-fn ut_main(args: Args) -> i32 {
-    let addr = args.get(2).and_then(ut::parse_u64).unwrap_or(0);
+ulib::entry!(main);
+
+fn main(args: Args) -> i32 {
+    let addr = args.get(2).and_then(ulib::parse_u64).unwrap_or(0);
     match args.get(1) {
         // SAFETY (all arms): deliberately invalid accesses; the point of
         // this program is to be killed by the kernel.

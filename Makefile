@@ -1,5 +1,6 @@
 # preemptive-threads: build, run and test targets.
 #
+#   make                 user programs -> initrd -> pt-os kernel (and the examples)
 #   make test            thread tests and OS tests on every emulated machine
 #   make test-threads    the thread test kernel (examples/test_kernel.rs) on every machine
 #   make test-os         the OS test kernel (os/examples/os_test.rs) on every machine
@@ -7,7 +8,7 @@
 #   make test-virt-el2   QEMU virt with virtualization=on (EL2 -> EL1 drop, PSCI over SMC)
 #   make test-raspi3b    QEMU raspi3b booting a flat image through the spin-table stub at EL2
 #   make test-os-<machine>  the OS test kernel on one machine
-#   make user            build the EL0 programs embedded into pt-os
+#   make user            build the EL0 programs packed into pt-os's initrd
 #   make run-os-virt     run the pt-os kernel on QEMU virt
 #   make kernel8.img     demo kernel image for a Raspberry Pi Zero 2 W SD card
 #   make run-raspi3b     run the demo on QEMU raspi3b (Ctrl-C to quit)
@@ -33,7 +34,7 @@ OS_PASS      := ALL [0-9]+ OS TESTS PASSED on 4 cores
         clippy doc clean build/test-virt.elf build/test-raspi3b.img kernel8.img build/demo-virt.elf \
         build/os-test-virt.elf build/os-test-raspi3b.img build/pt-os-virt.elf build/pt-os-kernel8.img
 
-all: build
+all: build build/pt-os-virt.elf build/pt-os-kernel8.img
 
 build: user
 	$(CARGO) build -j$(JOBS) --release --target-dir $(RPI_DIR) --examples
@@ -41,9 +42,10 @@ build: user
 	$(CARGO) build -j$(JOBS) --release --target-dir $(RPI_DIR) -p pt-os --bins --examples
 	$(CARGO) build -j$(JOBS) --release --target-dir $(VIRT_DIR) -p pt-os --bins --examples --features qemu-virt
 
-# EL0 programs (user/tests), embedded into pt-os by os/build.rs.
+# EL0 programs (user/bin: the userland, user/tests: kernel-test programs),
+# packed into pt-os's initrd by os/build.rs.
 user:
-	$(CARGO) build -j$(JOBS) --release --target-dir $(USER_DIR) -p pt-user-tests --bins
+	$(CARGO) build -j$(JOBS) --release --target-dir $(USER_DIR) -p pt-userland -p pt-user-tests --bins
 
 # --- test kernels ---------------------------------------------------------
 
@@ -142,11 +144,13 @@ clippy: user
 	$(CARGO) clippy -j$(JOBS) --release --target-dir $(VIRT_DIR) --examples --features qemu-virt,semihosting -- -D warnings
 	$(CARGO) clippy -j$(JOBS) --release --target-dir $(RPI_DIR) -p pt-os --bins --examples --features semihosting -- -D warnings
 	$(CARGO) clippy -j$(JOBS) --release --target-dir $(VIRT_DIR) -p pt-os --bins --examples --features qemu-virt,semihosting -- -D warnings
-	$(CARGO) clippy -j$(JOBS) --release --target-dir $(USER_DIR) -p pt-user-tests --bins -- -D warnings
+	$(CARGO) clippy -j$(JOBS) --release --target-dir $(USER_DIR) -p ulib -- -D warnings
+	$(CARGO) clippy -j$(JOBS) --release --target-dir $(USER_DIR) -p pt-userland -p pt-user-tests --bins -- -D warnings
 
 doc: user
 	$(CARGO) doc -j$(JOBS) --no-deps --target-dir $(RPI_DIR)
 	$(CARGO) doc -j$(JOBS) --no-deps --target-dir $(RPI_DIR) -p pt-os
+	$(CARGO) doc -j$(JOBS) --no-deps --target-dir $(USER_DIR) -p ulib
 
 clean:
 	$(CARGO) clean

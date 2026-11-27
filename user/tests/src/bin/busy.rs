@@ -3,10 +3,11 @@
 #![no_std]
 #![no_main]
 
-use ut::Args;
+use ulib::Args;
 
-#[no_mangle]
-fn ut_main(_args: Args) -> i32 {
+ulib::entry!(main);
+
+fn main(_args: Args) -> i32 {
     let mut x = 1u64;
     loop {
         x = core::hint::black_box(x.wrapping_mul(6364136223846793005).wrapping_add(1));

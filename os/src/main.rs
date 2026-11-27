@@ -1,11 +1,16 @@
-//! pt-os kernel. For now it boots, runs a couple of the embedded user
-//! programs and reports their exit status; the shell comes later.
+//! pt-os kernel: unpack the initrd, start the console, print the message
+//! of the day and run `/bin/sh` on the console, starting a new one
+//! whenever it exits.
 
 #![no_std]
 #![no_main]
 
-use preemptive_threads::{self as pt, println, Config};
-use pt_os::{Image, SpawnOptions};
+extern crate alloc;
+
+use preemptive_threads::{self as pt, println, Config, Duration};
+use pt_os::process::{self, describe_status};
+use pt_os::vfs::FdTable;
+use pt_os::{console, initrd, vfs, Image, SpawnOptions};
 
 #[no_mangle]
 fn kernel_main() -> ! {
@@ -15,20 +20,26 @@ fn kernel_main() -> ! {
 }
 
 fn main() {
-    let names: alloc::vec::Vec<&str> = pt_os::programs::names().collect();
-    println!("[pt-os] {} embedded programs: {:?}", names.len(), names);
-    for argv in [&[&b"hello"[..]][..], &[b"parent"]] {
-        let name = core::str::from_utf8(argv[0]).unwrap();
-        match pt_os::spawn(Image::Named(name), argv, SpawnOptions::default()) {
+    match initrd::mount() {
+        Ok(n) => println!("[pt-os] initrd: {} files", n),
+        Err(e) => println!("[pt-os] initrd: corrupt archive ({:?})", e),
+    }
+    console::init();
+    if let Ok(motd) = vfs::read_file("/etc/motd") {
+        console::write(&motd);
+    }
+    loop {
+        let opts = SpawnOptions { files: Some(FdTable::console()), ..Default::default() };
+        match pt_os::spawn(Image::Named("/bin/sh"), &[b"sh"], opts) {
             Ok(pid) => {
-                let (_, status) = pt_os::wait(Some(pid)).expect("wait");
-                println!("[pt-os] pid {} ({}) exited with status {}", pid, name, status);
+                let (_, status) = process::wait(Some(pid)).expect("wait for sh");
+                console::set_foreground(0);
+                println!("[pt-os] sh (pid {}) {}; starting a new one", pid, describe_status(status));
             }
-            Err(e) => println!("[pt-os] spawn {} failed: {:?}", name, e),
+            Err(e) => {
+                println!("[pt-os] cannot start /bin/sh: {:?}", e);
+                pt::sleep(Duration::from_secs(5));
+            }
         }
     }
-    let s = pt_os::stats();
-    println!("[pt-os] {} of {} frames free, {} ASIDs free; idle", s.frames_free, s.frames_total, s.asids_free);
 }
-
-extern crate alloc;

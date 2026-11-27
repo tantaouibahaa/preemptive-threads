@@ -1,0 +1,5 @@
+
+  welcome to pt-os: a tiny multicore OS in Rust on preemptive-threads
+  4 cores, isolated EL0 processes, a ramfs, pipes and a shell.
+  try:  ls /bin   |   primes 100000 &   |   top   |   mandel   |   help
+
