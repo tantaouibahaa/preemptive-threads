@@ -40,7 +40,8 @@ pub use io::{
     O_READ, O_TRUNC, O_WRITE,
 };
 pub use proc::{
-    procinfo, spawn_path, status_text, sysinfo, try_wait_any, wait_any, wait_pid, CpuInfo, ProcInfo, SpawnAttr, SysInfo,
+    is_fault_status, procinfo, spawn_path, status_text, sysinfo, try_wait_any, wait_any, wait_pid, CpuInfo, ProcInfo,
+    SpawnAttr, SysInfo, STATUS_INTERRUPTED, STATUS_KILLED,
 };
 pub use sys::{
     chdir, close, console_raw, cpu, dup2, errno, exit, getcwd, getpid, input_available, is_console, kill, mkdir, nr, open, pipe,

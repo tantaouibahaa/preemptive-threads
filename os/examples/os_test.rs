@@ -631,8 +631,12 @@ fn shell_session() -> TestResult {
     expect(&out, "welcome to pt-os", "cat /tmp/x")?;
     let out = ty.command("cat /tmp/x | grep pt-os | wc")?;
     expect(&out, "      1 ", "3-stage pipeline")?;
+    // One line for a fault: the kernel's, with the address and pc.
     let out = ty.command("crash")?;
-    expect(&out, "] segfault\n", "crash")?;
+    expect(&out, "] segfault (write) at 0x0 (pc 0x", "crash")?;
+    ensure!(out.matches("segfault").count() == 1, "crash: not one fault line: {:?}", out);
+    let out = ty.command("echo one; grep zzz /etc/motd && echo no ; echo two && echo three")?;
+    expect(&out, "\none\ntwo\nthree\n", "; and &&")?;
     let out = ty.command("echo 'still  alive'")?;
     expect(&out, "still  alive\n", "after crash")?;
     // Ctrl-C a running job: the shell survives.
@@ -664,7 +668,7 @@ fn shell_session() -> TestResult {
     let s = wait(sh)?;
     console::capture_stop();
     ensure!(s == 3, "sh exit status {}", s);
-    Ok(String::from("echo|wc, ls, primes & + wait, > and cat, 3-stage pipe, crash, Ctrl-C, exit 3"))
+    Ok(String::from("echo|wc, ls, primes & + wait, > and cat, 3-stage pipe, crash, ; and &&, Ctrl-C, exit 3"))
 }
 
 fn resources_back_to_baseline() -> TestResult {

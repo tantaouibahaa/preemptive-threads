@@ -1,6 +1,8 @@
 //! `mandel [width height [iterations]]`: an ASCII Mandelbrot set computed
 //! by 4 worker processes (one per core), each sending its rows back
-//! through its own pipe.
+//! through its own pipe. The default, 78x32 at 150000 iterations, fills an
+//! 80-column terminal and takes about 0.3 s on QEMU (nearly all of it in
+//! the points inside the set).
 #![no_std]
 #![no_main]
 
@@ -10,13 +12,16 @@ use ulib::{File, SpawnAttr};
 ulib::entry!(main);
 
 const WORKERS: usize = 4;
-const SHADES: &[u8] = b" .:-=+*#%@";
+/// Outside the set, by escape time (on a log scale); `@` is the set.
+const SHADES: &[u8] = b" .,:;-=+*#%";
+const IN_SET: u8 = b'@';
 
 fn row(y: usize, w: usize, h: usize, iters: u32) -> Vec<u8> {
     let mut out = Vec::with_capacity(w);
+    // Sample the middle of each character cell.
+    let ci = -1.2 + 2.4 * (y as f64 + 0.5) / h as f64;
     for x in 0..w {
-        let cr = -2.2 + 3.0 * x as f64 / w as f64;
-        let ci = -1.2 + 2.4 * y as f64 / h as f64;
+        let cr = -2.2 + 3.0 * (x as f64 + 0.5) / w as f64;
         let (mut zr, mut zi) = (0.0f64, 0.0f64);
         let mut i = 0;
         while i < iters && zr * zr + zi * zi < 4.0 {
@@ -25,9 +30,17 @@ fn row(y: usize, w: usize, h: usize, iters: u32) -> Vec<u8> {
             zr = t;
             i += 1;
         }
-        out.push(if i >= iters { SHADES[SHADES.len() - 1] } else { SHADES[i as usize % (SHADES.len() - 1)] });
+        out.push(if i >= iters { IN_SET } else { SHADES[shade(i)] });
     }
     out
+}
+
+/// About 1.4 * log2(i), without floating-point logarithms (no libm).
+fn shade(i: u32) -> usize {
+    let log2 = 31 - i.max(1).leading_zeros() as usize;
+    // Half steps: is i past 2^log2 * 1.5?
+    let half = (i as usize) >= (3usize << log2) / 2;
+    ((log2 * 14 + if half { 7 } else { 0 }) / 10).min(SHADES.len() - 1)
 }
 
 /// `mandel -w index count width height iterations`: compute rows
@@ -55,9 +68,9 @@ fn main(args: Args) -> i32 {
     if args.str(1) == Some("-w") {
         return worker(&args);
     }
-    let w = args.get(1).and_then(ulib::parse_u64).unwrap_or(64).clamp(8, 200) as usize;
-    let h = args.get(2).and_then(ulib::parse_u64).unwrap_or(24).clamp(4, 100) as usize;
-    let iters = args.get(3).and_then(ulib::parse_u64).unwrap_or(2000).clamp(10, 100_000) as u32;
+    let w = args.get(1).and_then(ulib::parse_u64).unwrap_or(78).clamp(8, 200) as usize;
+    let h = args.get(2).and_then(ulib::parse_u64).unwrap_or(32).clamp(4, 100) as usize;
+    let iters = args.get(3).and_then(ulib::parse_u64).unwrap_or(150_000).clamp(10, 1_000_000) as u32;
     let t0 = ulib::uptime_ns();
     let mut readers = Vec::new();
     let mut pids = Vec::new();
@@ -108,16 +121,7 @@ fn main(args: Args) -> i32 {
     }
     let ms = (ulib::uptime_ns() - t0) / 1_000_000;
     let used: Vec<String> = (0..4).filter(|c| cpus & (1 << c) != 0).map(|c| format!("{}", c)).collect();
-    println!(
-        "mandel: {}x{}, {} iterations, {} workers (pids {:?}) on cpus {}, {} ms",
-        w,
-        h,
-        iters,
-        WORKERS,
-        pids,
-        used.join(","),
-        ms
-    );
+    println!("mandel: {}x{}, {} iterations, {} workers on cpus {}, {} ms", w, h, iters, WORKERS, used.join(","), ms);
     if failed == 0 {
         0
     } else {

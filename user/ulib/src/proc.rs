@@ -98,13 +98,26 @@ pub fn try_wait_any() -> Result<Option<(i64, i32)>, Errno> {
     wait_raw(-1, 1)
 }
 
+/// Exit status of a process interrupted with Ctrl-C.
+pub const STATUS_INTERRUPTED: i32 = -2;
+/// Exit status of a process killed with `kill`.
+pub const STATUS_KILLED: i32 = -9;
+
+/// Whether `status` says the process was killed by a fault (segfault,
+/// illegal instruction, bus error, breakpoint, floating-point exception).
+/// The kernel prints a line with the fault address and pc when that
+/// happens.
+pub fn is_fault_status(status: i32) -> bool {
+    matches!(status, -11 | -4 | -7 | -5 | -8)
+}
+
 /// Describe an exit status: `exited 3`, `killed`, `interrupted`,
 /// `segfault`, ...
 pub fn status_text(status: i32) -> String {
     match status {
         s if s >= 0 => format!("exited {}", s),
-        -9 => String::from("killed"),
-        -2 => String::from("interrupted"),
+        STATUS_KILLED => String::from("killed"),
+        STATUS_INTERRUPTED => String::from("interrupted"),
         -11 => String::from("segfault"),
         -4 => String::from("illegal instruction"),
         -7 => String::from("bus error"),

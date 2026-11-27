@@ -35,7 +35,7 @@ use preemptive_threads::arch::mmu::USER_ASIDS;
 use preemptive_threads::arch::user::{classify, run_user, FaultKind, UserExit, UserTrap};
 use preemptive_threads::arch::vectors::TrapFrame;
 use preemptive_threads::sync::{IrqSpinLock, Mutex, WaitQueue};
-use preemptive_threads::{println, sched, thread, Builder, Duration, Thread, ThreadState};
+use preemptive_threads::{sched, thread, Builder, Duration, Thread, ThreadState};
 
 /// Process id. 0 is the kernel.
 pub type Pid = u32;
@@ -360,7 +360,11 @@ fn process_main(p: Arc<Process>, mut frame: TrapFrame) {
                 thread::yield_now();
             }
             UserTrap::Fault { kind, addr } => {
-                println!("[pid {}] {} at {:#x} (pc {:#x})", p.pid, kind, addr, frame.elr);
+                // The one report of a fault (the shell does not add its own):
+                // through the console, so it lands in order with the
+                // process's output.
+                let line = format!("[pid {}] {} at {:#x} (pc {:#x})\n", p.pid, kind, addr, frame.elr);
+                crate::console::write(line.as_bytes());
                 *p.fault.lock() = Some(Fault { kind, addr, pc: frame.elr });
                 break -kind.signal();
             }
