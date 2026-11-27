@@ -6,8 +6,12 @@
 [build]
 target = "aarch64-unknown-none"
 
+# cortex-a53 implies the optional Crypto extension (+aes, +sha2), which
+# the BCM2837 does not implement: an AES or SHA instruction would be
+# UNDEFINED on the Pi. `make sdkit` checks that no image contains one.
 [target.aarch64-unknown-none]
 rustflags = [
     "-C", "target-cpu=cortex-a53",
+    "-C", "target-feature=-aes,-sha2",
     "-C", "link-arg=-nostdlib",
 ]
