@@ -42,24 +42,33 @@ fn main() {
 | QEMU `raspi3b`, flat `kernel8.img` released through the spin-table stub at EL2, like the Pi firmware | all 16 tests pass, 4 cores, in CI |
 | Real Raspberry Pi Zero 2 W | **not yet verified on hardware.** The image builds and the boot path mirrors the firmware's (EL2 entry, spin table, ARM-local interrupt controller, PL011 on GPIO14/15). See [Running on a real Pi](#running-on-a-real-pi-zero-2-w) |
 
-## In progress: user processes
+## In progress: pt-os, a tiny multicore OS
 
 The repository is growing into a tiny multicore OS (`pt-os`). Already working
-on all three QEMU machines, with tests in CI (`make test-os`):
+on all three QEMU machines, with tests in CI (`make test-os`, `make
+test-shell`):
 
 - user programs run at EL0 in their own address spaces (per-process page
   tables, 8-bit ASIDs, kernel mapped EL1-only and never executable from
-  EL0);
-- system calls (`svc #0`): `exit`, `write`, `spawn`, `wait`, `kill`,
-  `getpid`, `sleep`, `yield`, `sbrk`, `uptime`, `cpu`;
-- a static ELF64 loader with W^X, user stacks with argc/argv, a process
-  table with `wait`/`kill`. A faulting process is killed with
-  `[pid N] <reason> at <addr>` and the kernel keeps running.
+  EL0), loaded by a static ELF64 loader with W^X;
+- 26 system calls (`svc #0`): processes (`spawn` with fd mappings, `wait`,
+  `kill`, `procinfo`, ...), files (`open`, `read`, `write`, `readdir`,
+  `pipe`, `dup2`, ...) and the console;
+- a writable in-memory file system unpacked from a cpio initrd built from
+  the user programs, per-process fd tables, pipes;
+- console input from the PL011 receive interrupt through a line discipline
+  (echo, backspace, Ctrl-C kills the foreground job, Ctrl-D);
+- a user library (`ulib`: `println!`, a heap over `sbrk`, files) and a
+  userland: `sh` with pipelines, redirects and background jobs, `ls`, `cat`,
+  `echo`, `wc`, `grep`, `ps`, `top`, `primes`, `mandel` (4 worker processes),
+  `stress`, `crash`. A faulting process is killed with `[pid N] segfault`
+  and everything else keeps running.
 
-A file system, console input, a user library and a shell come next. The
-workspace has three crates: this one (the core: scheduler, sync, arch and
-EL0 support), `os/` (the `pt-os` kernel: processes, system calls, ELF) and
-`user/tests/` (the EL0 test programs). See
+Try it with `make run-os-virt` (or `make run-os-raspi3b`): a shell on your
+terminal, Ctrl-A X quits QEMU. Not yet tried on a real Pi. The workspace has
+the core crate (this one: scheduler, sync, arch and EL0 support), `os/`
+(the `pt-os` kernel) and `user/` (`ulib`, the userland in `bin/`, the
+kernel-test programs in `tests/`). See
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#6-user-processes-pt-os).
 
 ## Features
