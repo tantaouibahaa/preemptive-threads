@@ -86,6 +86,7 @@ fn main() {
         ("semaphore_limits_concurrency", semaphore_limits_concurrency),
         ("condvar_producer_consumer", condvar_producer_consumer),
         ("fpu_state_preserved", fpu_state_preserved),
+        ("console_write_keeps_irqs_on", console_write_keeps_irqs_on),
         ("threads_reaped", threads_reaped),
     ];
     let names: Vec<&'static str> = tests.iter().map(|t| t.0).collect();
@@ -541,6 +542,30 @@ fn fpu_state_preserved() -> TestResult {
         rounds += h.join()?;
     }
     Ok(format!("{} FP rounds bit-exact across preemptions", rounds))
+}
+
+/// A long console write must not keep interrupts masked: the console lock
+/// is held one chunk at a time. Only meaningful with a UART that takes real
+/// time (`--features slow-uart`, or real hardware): there 1 KiB takes about
+/// 90 ms and the writing core has to keep taking its 1 kHz tick meanwhile.
+fn console_write_keeps_irqs_on() -> TestResult {
+    let h = Builder::new().cpu(2).spawn(|| {
+        let mut text = Vec::new();
+        for i in 0..13 {
+            text.extend_from_slice(format!("[console] line {:2} ", i).as_bytes());
+            text.resize(text.len() + 60, b'-');
+            text.push(b'\n');
+        }
+        let ticks = pt::stats().cpus[2].ticks;
+        let t0 = Instant::now();
+        pt::console::write_bytes(&text);
+        (text.len(), t0.elapsed(), pt::stats().cpus[2].ticks - ticks)
+    }).unwrap();
+    let (len, took, ticks) = h.join();
+    let ms = took.as_millis() as u64;
+    // Half the ideal tick count, with slack for the first and last tick.
+    ensure!(ticks * 2 + 4 >= ms, "{} B took {} ms but cpu2 took only {} ticks: IRQs were masked", len, ms, ticks);
+    Ok(format!("{} B in {} ms, cpu2 ticks +{}", len, ms, ticks))
 }
 
 fn threads_reaped() -> TestResult {
