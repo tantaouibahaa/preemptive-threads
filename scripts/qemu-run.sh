@@ -16,7 +16,7 @@ log=${4:-/dev/null}
 case "$machine" in
   virt)     args=(-M virt,gic-version=2 -cpu cortex-a53 -smp 4 -m 512M) ;;
   virt-el2) args=(-M virt,gic-version=2,virtualization=on -cpu cortex-a53 -smp 4 -m 512M) ;;
-  raspi3b)  args=(-M raspi3b) ;;
+  raspi3b)  args=(-M raspi3b -cpu cortex-a53) ;;  # the BCM2837 always has A53s; -cpu only documents it
   *) echo "unknown machine: $machine" >&2; exit 2 ;;
 esac
 

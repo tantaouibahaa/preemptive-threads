@@ -36,7 +36,7 @@ class Session:
         args = {
             "virt": ["-M", "virt,gic-version=2", "-cpu", "cortex-a53", "-smp", "4", "-m", "512M"],
             "virt-el2": ["-M", "virt,gic-version=2,virtualization=on", "-cpu", "cortex-a53", "-smp", "4", "-m", "512M"],
-            "raspi3b": ["-M", "raspi3b"],
+            "raspi3b": ["-M", "raspi3b", "-cpu", "cortex-a53"],
         }[machine]
         self.deadline = deadline
         self.buf = ""

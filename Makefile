@@ -153,7 +153,7 @@ build/demo-virt.elf:
 	cp $(VIRT_OUT)/rpi_kernel $@
 
 run-raspi3b: kernel8.img
-	qemu-system-aarch64 -M raspi3b -display none -serial stdio -kernel kernel8.img
+	qemu-system-aarch64 -M raspi3b -cpu cortex-a53 -display none -serial stdio -kernel kernel8.img
 
 run-virt: build/demo-virt.elf
 	qemu-system-aarch64 -M virt,gic-version=2 -cpu cortex-a53 -smp 4 -m 512M -display none -serial stdio -kernel $<
@@ -174,7 +174,7 @@ run-os-virt: build/pt-os-virt.elf
 	qemu-system-aarch64 -M virt,gic-version=2 -cpu cortex-a53 -smp 4 -m 512M -display none $(CONSOLE) -kernel $<
 
 run-os-raspi3b: build/pt-os-kernel8.img
-	qemu-system-aarch64 -M raspi3b -display none $(CONSOLE) -kernel $<
+	qemu-system-aarch64 -M raspi3b -cpu cortex-a53 -display none $(CONSOLE) -kernel $<
 
 # The README's recording: typed at human speed into the serial port, every
 # step checked, saved as an asciicast and rendered to a GIF.
