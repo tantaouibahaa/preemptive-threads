@@ -10,35 +10,35 @@ checksum = "2b23ac50abb8261cb38c6e2a7192d3302e0836dac1628f6a93b82b4fad185897"
 
 [[package]]
 name = "preemptive-threads"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "linked_list_allocator",
 ]
 
 [[package]]
 name = "pt-os"
-version = "0.1.0"
+version = "2.0.0"
 dependencies = [
  "preemptive-threads",
 ]
 
 [[package]]
 name = "pt-user-tests"
-version = "0.1.0"
+version = "2.0.0"
 dependencies = [
  "ulib",
 ]
 
 [[package]]
 name = "pt-userland"
-version = "0.1.0"
+version = "2.0.0"
 dependencies = [
  "ulib",
 ]
 
 [[package]]
 name = "ulib"
-version = "0.1.0"
+version = "2.0.0"
 dependencies = [
  "linked_list_allocator",
 ]
