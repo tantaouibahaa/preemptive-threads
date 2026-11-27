@@ -14,9 +14,12 @@
 #   make run-os-virt     interactive pt-os shell on QEMU virt (Ctrl-A X quits)
 #   make run-os-raspi3b  interactive pt-os shell on QEMU raspi3b (Ctrl-A X quits)
 #   make kernel8.img     demo kernel image for a Raspberry Pi Zero 2 W SD card
+#   make build/pt-os-kernel8.img  pt-os image for a Raspberry Pi SD card
+#   make build/os-test-pi.img     OS test kernel for a real Pi (no semihosting: prints the verdict, then halts)
 #   make run-raspi3b     run the demo on QEMU raspi3b (Ctrl-C to quit)
 #   make run-virt        run the demo on QEMU virt
 #   make clippy          lint both board configurations
+#   make demo-gif        record a shell session on QEMU virt and render docs/demo.gif (needs Pillow)
 
 CARGO        ?= cargo
 JOBS         ?= 4
@@ -39,7 +42,7 @@ OS_PASS      := ALL [0-9]+ OS TESTS PASSED on 4 cores
         test-os-virt test-os-virt-el2 test-os-raspi3b test-shell test-shell-virt test-shell-virt-el2 \
         test-shell-raspi3b run-raspi3b run-virt run-os-virt run-os-raspi3b \
         clippy doc clean build/test-virt.elf build/test-raspi3b.img kernel8.img build/demo-virt.elf \
-        build/os-test-virt.elf build/os-test-raspi3b.img build/pt-os-virt.elf build/pt-os-kernel8.img
+        build/os-test-virt.elf build/os-test-raspi3b.img build/pt-os-virt.elf build/pt-os-kernel8.img demo-gif build/os-test-pi.img
 
 all: build build/pt-os-virt.elf build/pt-os-kernel8.img
 
@@ -106,6 +109,13 @@ test-os-raspi3b: build/os-test-raspi3b.img
 
 test-os: test-os-virt test-os-virt-el2 test-os-raspi3b
 
+# For real hardware, where a semihosting call would trap. Own target dir,
+# so it does not flip the features of the emulator build back and forth.
+build/os-test-pi.img: user
+	@mkdir -p build
+	$(CARGO) build -j$(JOBS) --release --target-dir $(RPI_DIR)-hw -p pt-os --example os_test
+	$(OBJCOPY) -O binary $(RPI_DIR)-hw/$(TARGET)/release/examples/os_test $@
+
 # --- shell sessions (real PL011 receive path) -------------------------------
 
 test-shell-virt: build/pt-os-virt.elf
@@ -159,6 +169,12 @@ run-os-virt: build/pt-os-virt.elf
 
 run-os-raspi3b: build/pt-os-kernel8.img
 	qemu-system-aarch64 -M raspi3b -display none $(CONSOLE) -kernel $<
+
+# The README's recording: typed at human speed into the serial port, every
+# step checked, saved as an asciicast and rendered to a GIF.
+demo-gif: build/pt-os-virt.elf
+	scripts/shell-session.py virt $< $(TIMEOUT) build/shell-record.log --record=build/shell-demo.cast
+	scripts/cast2gif.py build/shell-demo.cast docs/demo.gif
 
 # --- lint / docs ----------------------------------------------------------
 
