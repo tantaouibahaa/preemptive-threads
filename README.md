@@ -192,18 +192,23 @@ QEMU `raspi3b`, which boots the image the way the firmware does.
 You need a Pi Zero 2 W, a micro-SD card and a 3.3 V USB-to-serial adapter
 (the shell lives on the serial port).
 
-1. Build the image: `make build/pt-os-kernel8.img`. It is built without
-   semihosting, which would trap on real hardware. `make kernel8.img`
-   builds the threading demo instead.
-2. Format the SD card as FAT32. Copy `bootcode.bin`, `start.elf` and
-   `fixup.dat` from the `boot/` folder of
-   <https://github.com/raspberrypi/firmware>, and the image as
-   `kernel8.img`.
-3. Create `config.txt` on the card:
+1. Build the SD card kit: `make sdkit`. `build/sdkit/` then holds every
+   image built without semihosting (which would trap on real hardware) and
+   checked for instructions the BCM2837 lacks: `uart0.img` (a serial and
+   ACT LED check with no OS), `test8.img` (thread tests), `ostest8.img`
+   (OS tests), `ptos8.img` (the shell) and `kernel8.img` (the demo); the
+   firmware (`bootcode.bin`, `start.elf`, `fixup.dat`, the Zero 2 W device
+   tree and `overlays/disable-bt.dtbo`, all from one pinned
+   [raspberrypi/firmware](https://github.com/raspberrypi/firmware) release),
+   `config.txt`, `README.txt` (step-by-step boot and troubleshooting) and
+   `SHA256SUMS`. `make sdkit-sync SDCARD=<dir>` copies it into a folder.
+2. Format the SD card as FAT32 and copy everything in `build/sdkit/` to its
+   root, the `overlays` folder included.
+3. Pick the kernel in `config.txt` (one `kernel=` line). The kit's file:
 
    ```ini
    arm_64bit=1
-   kernel=kernel8.img
+   kernel=uart0.img
    kernel_address=0x80000
    enable_uart=1
    init_uart_clock=48000000
@@ -212,13 +217,16 @@ You need a Pi Zero 2 W, a micro-SD card and a 3.3 V USB-to-serial adapter
 
    The firmware then starts the kernel at EL2 at 0x80000 (where the linker
    script puts it) and parks cores 1-3 on the spin table, as `make
-   test-raspi3b` emulates.
+   test-raspi3b` emulates. Boot `uart0.img` first, then `test8.img`,
+   `ostest8.img` and `ptos8.img`.
 4. Wire the adapter: adapter RX to GPIO14 (pin 8), adapter TX to GPIO15
    (pin 10), GND to GND (pin 6). Do not connect its 5 V or 3.3 V pin.
 5. Open the console at 115200 8N1 (`screen /dev/tty.usbserial-* 115200` on
-   macOS, `screen /dev/ttyUSB0 115200` on Linux) and power the Pi. The
-   banner should say `entered at EL2`, followed by the motd and the
-   `pt-os>` prompt.
+   macOS, `screen /dev/ttyUSB0 115200` on Linux) and power the Pi. Each
+   kernel starts with a few `[boot]` lines (exception level, MIDR, counter
+   frequency, SCTLR, the RAM range the firmware reports, board and
+   firmware revision, `cpuN online`); with `ptos8.img` the banner says
+   `entered at EL2`, followed by the motd and the `pt-os>` prompt.
 
 If nothing happens: check that RX and TX are not swapped, that the card is
 FAT32 with the files at its root, and that `arm_64bit=1` is set. Garbage on

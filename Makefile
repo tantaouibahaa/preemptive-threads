@@ -16,6 +16,10 @@
 #   make kernel8.img     demo kernel image for a Raspberry Pi Zero 2 W SD card
 #   make build/pt-os-kernel8.img  pt-os image for a Raspberry Pi SD card
 #   make build/os-test-pi.img     OS test kernel for a real Pi (no semihosting: prints the verdict, then halts)
+#   make sdkit           every Pi image, firmware, config.txt, README.txt and SHA256SUMS in build/sdkit
+#   make sdkit-sync      make sdkit, then copy it onto $(SDCARD) (default ~/Desktop/pt-sd-card)
+#   make test-uart0      boot uart0.img (the kit's serial + LED check) on QEMU raspi3b
+#   make run-uart0       run uart0.img on QEMU raspi3b (Ctrl-A X quits)
 #   make run-raspi3b     run the demo on QEMU raspi3b (Ctrl-C to quit)
 #   make run-virt        run the demo on QEMU virt
 #   make clippy          lint both board configurations
@@ -47,7 +51,7 @@ XF           := $(if $(FEATURES),$(comma)$(FEATURES))
 .PHONY: all build user test test-threads test-os test-virt test-virt-el2 test-raspi3b \
         test-os-virt test-os-virt-el2 test-os-raspi3b test-shell test-shell-virt test-shell-virt-el2 \
         test-shell-raspi3b run-raspi3b run-virt run-os-virt run-os-raspi3b \
-        clippy doc clean build/test-virt.elf build/test-raspi3b.img kernel8.img build/demo-virt.elf \
+        clippy doc clean sdkit sdkit-sync test-uart0 run-uart0 build/uart0.img build/test-virt.elf build/test-raspi3b.img kernel8.img build/demo-virt.elf \
         build/os-test-virt.elf build/os-test-raspi3b.img build/pt-os-virt.elf build/pt-os-kernel8.img demo-gif build/os-test-pi.img
 
 all: build build/pt-os-virt.elf build/pt-os-kernel8.img
@@ -121,6 +125,39 @@ build/os-test-pi.img: user
 	@mkdir -p build
 	$(CARGO) build -j$(JOBS) --release --target-dir $(RPI_DIR)-hw -p pt-os --example os_test
 	$(OBJCOPY) -O binary $(RPI_DIR)-hw/$(TARGET)/release/examples/os_test $@
+
+# --- SD card kit -------------------------------------------------------------
+
+# Everything for a real Pi, from the current tree: no semihosting, no
+# FEATURES, own target dirs (so the emulator builds keep their features).
+HW_DIR       := target/rpi-hw
+TOOLS_DIR    := target/tools
+SDKIT        := build/sdkit
+SDCARD       ?= $(HOME)/Desktop/pt-sd-card
+
+build/uart0.img:
+	@mkdir -p build
+	$(CARGO) build -j$(JOBS) --release --target-dir $(TOOLS_DIR) -p pt-uart0
+	$(OBJCOPY) -O binary $(TOOLS_DIR)/$(TARGET)/release/uart0 $@
+
+test-uart0: build/uart0.img
+	scripts/uart0-check.py $< build/uart0.log
+
+run-uart0: build/uart0.img
+	qemu-system-aarch64 -M raspi3b -cpu cortex-a53 -display none $(CONSOLE) -kernel $<
+
+sdkit: user
+	$(CARGO) build -j$(JOBS) --release --target-dir $(HW_DIR) --example test_kernel --example rpi_kernel
+	$(CARGO) build -j$(JOBS) --release --target-dir $(HW_DIR) -p pt-os --bin pt-os --example os_test
+	$(CARGO) build -j$(JOBS) --release --target-dir $(TOOLS_DIR) -p pt-uart0
+	scripts/sdkit.sh $(SDKIT) $(HW_DIR) $(TOOLS_DIR) $(USER_DIR)
+	scripts/uart0-check.py $(SDKIT)/uart0.img build/uart0.log
+
+# Copies (never deletes) into $(SDCARD): other files there are left alone.
+sdkit-sync: sdkit
+	mkdir -p "$(SDCARD)/overlays"
+	cd $(SDKIT) && for f in $$(cat .files) SHA256SUMS; do /bin/cp -f "$$f" "$(SDCARD)/$$f"; done
+	cd "$(SDCARD)" && $$(command -v sha256sum || echo shasum -a 256) -c SHA256SUMS
 
 # --- shell sessions (real PL011 receive path) -------------------------------
 

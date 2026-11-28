@@ -1,0 +1,16 @@
+# preemptive-threads / pt-os on a Raspberry Pi Zero 2 W (see README.txt)
+arm_64bit=1
+# Boot the stages in order, one kernel= line at a time:
+#   uart0.img    serial + ACT LED check, nothing else
+#   test8.img    thread test suite
+#   ostest8.img  pt-os test suite
+#   ptos8.img    pt-os with its shell
+#   kernel8.img  the threading demo
+kernel=uart0.img
+# Load at 0x80000 like the linker scripts expect (newer firmware defaults to 0x200000)
+kernel_address=0x80000
+enable_uart=1
+# The kernels program the PL011 for 115200 baud from a 48 MHz clock
+init_uart_clock=48000000
+# Put the PL011 UART on GPIO14/15 instead of Bluetooth (needs overlays/disable-bt.dtbo)
+dtoverlay=disable-bt
