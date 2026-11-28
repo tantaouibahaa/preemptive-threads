@@ -66,6 +66,22 @@ kernel and `user/` holds the programs.
 - `docs/ARCHITECTURE.md` section 6: address spaces, EL0/EL1
   transitions, the path of a system call, the file system, pipes, the
   console, jobs and Ctrl-C, and the process lifecycle.
+- `make sdkit`: the Pi SD card kit in `build/sdkit/` (all five images, the
+  firmware, device tree and `disable-bt` overlay of one pinned firmware
+  release, `config.txt`, `README.txt`, `SHA256SUMS`), each image checked
+  for semihosting calls and Crypto-extension instructions; `make
+  sdkit-sync` copies it into a folder.
+- `uart0.img` (`tools/uart0`): a few hundred bytes of assembly that set
+  up GPIO14/15 and the PL011, print a line every second, report received
+  bytes and toggle the ACT LED, to check wiring and `config.txt` first.
+- Boot breadcrumbs: exception level, MIDR, CNTFRQ, SCTLR, the RAM range,
+  board and firmware revision, `cpuN online`.
+- On the Pi the RAM range comes from the firmware (property mailbox,
+  `GET_ARM_MEMORY`), capped at 448 MiB; the GPU's memory is unmapped.
+- `slow-uart` feature (`make test FEATURES=slow-uart`): a PL011 as slow as
+  a real one at 115200 baud, for the emulator.
+- Thread tests `console_write_keeps_irqs_on` and `memory_map`, and a check
+  that no stray interrupt fired (`stray_irqs`).
 
 ### Changed
 - The README leads with pt-os. The library documentation is shorter,
@@ -75,6 +91,18 @@ kernel and `user/` holds the programs.
 ### Fixed
 - The thread test kernel's watchdog is disarmed before the verdict, so
   it cannot fire after a non-semihosting exit.
+- Console output no longer keeps IRQs masked while it waits for the UART:
+  at 115200 baud a 4 KiB write used to mask them for a third of a second.
+- `kill` published the killed flag before the kill status, so a process
+  could exit as `killed` instead of `interrupted` after Ctrl-C.
+- Boot writes CNTHCTL_EL2, MDCR_EL2, SCTLR_EL2, MDSCR_EL1, PMUSERENR_EL0
+  and the timer controls in full (their reset values are UNKNOWN on
+  hardware), and every BCM2835 interrupt source the firmware may have left
+  enabled is disabled; one that fires anyway is disabled and counted.
+- GPIO15 (RXD) gets a pull-up, GPIO32/33 are taken off the UART, and the
+  pull-up/down sequence waits on the counter.
+- No AES/SHA instructions: `cortex-a53` implies the Crypto extension, which
+  the BCM2837 lacks.
 
 ### Not yet verified
 - Real Raspberry Pi Zero 2 W hardware. Everything is verified on QEMU
