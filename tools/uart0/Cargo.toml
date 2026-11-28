@@ -1,0 +1,16 @@
+[package]
+name = "pt-uart0"
+version = "2.0.0"
+edition = "2021"
+rust-version = "1.88"
+authors = ["Nathan Ryver <tantaouisoftware@gmail.com>"]
+description = "uart0.img: a dependency-free serial and LED check for a Raspberry Pi Zero 2 W SD card"
+license = "MIT"
+publish = false
+build = "build.rs"
+
+[[bin]]
+name = "uart0"
+path = "src/main.rs"
+test = false
+bench = false

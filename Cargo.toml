@@ -10,8 +10,8 @@ repository = "https://github.com/tantaouibahaa/preemptive-threads"
 keywords = ["threading", "no-std", "raspberry-pi", "bare-metal", "aarch64"]
 categories = ["no-std", "embedded", "concurrency", "os"]
 readme = "README.md"
-# The library only: not the recording or the pt-os programs.
-exclude = ["/docs/demo.gif", "/user"]
+# The library only: not the recording, the pt-os programs or the tools.
+exclude = ["/docs/demo.gif", "/user", "/tools"]
 build = "build.rs"
 
 [dependencies]
@@ -51,9 +51,10 @@ path = "examples/test_kernel.rs"
 # The core crate stays at the root (plain `cargo build` builds only it);
 # `os/` is the kernel binary (processes, system calls, VFS, console);
 # `user/` the programs that run at EL0: `ulib` (the user library), `bin`
-# (the userland: sh, ls, cat, top, ...) and `tests` (kernel-test programs).
+# (the userland: sh, ls, cat, top, ...) and `tests` (kernel-test programs);
+# `tools/uart0` the stand-alone serial check image of the SD card kit.
 [workspace]
-members = [".", "os", "user/ulib", "user/bin", "user/tests"]
+members = [".", "os", "user/ulib", "user/bin", "user/tests", "tools/uart0"]
 
 # User programs are embedded into the kernel image: keep them small.
 [profile.release.package.pt-user-tests]

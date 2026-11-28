@@ -23,6 +23,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "pt-uart0"
+version = "2.0.0"
+
+[[package]]
 name = "pt-user-tests"
 version = "2.0.0"
 dependencies = [
